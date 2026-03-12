@@ -28,7 +28,6 @@ except FileNotFoundError:
 WORDS_PER_UNIT = 20
 total_units = (total_words + WORDS_PER_UNIT - 1) // WORDS_PER_UNIT
 
-# 生成单元列表 (例如: "第 1 单元 (1-20)", "第 2 单元 (21-40)")
 unit_options = []
 for i in range(total_units):
     start_idx = i * WORDS_PER_UNIT + 1
@@ -39,63 +38,62 @@ for i in range(total_units):
 with st.sidebar:
     st.header("⚙️ 学习控制台")
     
-    # 选择单元
     selected_unit_str = st.selectbox("📚 选择要学习的单元：", unit_options)
-    # 提取当前选择的单元索引 (0-based)
     current_unit_idx = unit_options.index(selected_unit_str)
     
     st.markdown("---")
-    st.subheader("👁️ 显示设置")
+    st.subheader("👁️ 显示与排序")
     show_english = st.checkbox("显示英文 (English)", value=True)
     show_chinese = st.checkbox("显示中文 (释义)", value=True)
     
+    # 新增：打乱顺序开关
+    is_shuffle = st.toggle("🔀 开启打乱顺序")
+    if is_shuffle:
+        if 'shuffle_seed' not in st.session_state:
+            st.session_state.shuffle_seed = 42
+        # 提供一个按钮，如果觉得这遍乱序背熟了，可以换一种乱序方式
+        if st.button("🔄 换一种打乱方式"):
+            st.session_state.shuffle_seed += 1
+
     if not show_english and not show_chinese:
         st.warning("请至少选择显示一种语言哦！")
 
-# ================= 5. 提取当前单元的单词 =================
+# ================= 5. 提取并处理当前单元的数据 =================
 start_index = current_unit_idx * WORDS_PER_UNIT
 end_index = min((current_unit_idx + 1) * WORDS_PER_UNIT, total_words)
-df_unit = df_words.iloc[start_index:end_index]
+# 复制一份当前单元的数据，避免修改原始数据
+df_unit = df_words.iloc[start_index:end_index].copy()
 
-# ================= 6. 一键连读音频生成 =================
+# 如果开启了乱序，对当前这 20 个单词进行重新洗牌
+if is_shuffle:
+    df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
+
+# ================= 6. 一键连读音频生成 (纯英文优化版) =================
 @st.cache_data(show_spinner=False)
-def generate_unit_audio(text_to_read, lang):
-    """缓存生成的音频，避免重复点击时重复生成"""
-    tts = gTTS(text=text_to_read, lang=lang)
+def generate_unit_audio(text_to_read):
+    # 固定使用英文引擎，去掉了中文切换
+    tts = gTTS(text=text_to_read, lang='en')
     fp = io.BytesIO()
     tts.write_to_fp(fp)
     fp.seek(0)
     return fp.read()
 
-st.markdown(f"### 当前：{selected_unit_str}")
+st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
 
-# 生成供朗读的文本
-if show_english or show_chinese:
-    audio_text = ""
-    for _, row in df_unit.iterrows():
-        if show_english:
-            audio_text += f"{row['English']}. "
-        if show_chinese:
-            # 加上逗号是为了让语音引擎稍微停顿一下
-            audio_text += f"{row['Chinese']}, " 
-        audio_text += "。 " # 每个单词结束后加句号停顿
+# 优化发音逻辑：只提取英文，并且用逗号分隔，让它读起来节奏更轻快连贯
+audio_text = ", ".join(df_unit['English'].tolist())
 
-    # 播放按钮区域
-    st.markdown("---")
+st.markdown("---")
     
-    # 判断发音语言：如果只显英文，就用纯正英文发音；如果有中文，用兼容发音
-    tts_lang = 'en' if (show_english and not show_chinese) else 'zh-CN'
-    
-    if st.button("🔊 生成并播放本页全部单词 (可后台播放)"):
-        with st.spinner("正在合成高音质音频，请稍等几秒..."):
-            audio_bytes = generate_unit_audio(audio_text, tts_lang)
-            st.audio(audio_bytes, format='audio/mp3', autoplay=True)
-            st.success("合成完毕！点击播放器即可开始听力，你可以最小化网页挂在后台了。")
+if st.button("🔊 播放英文音频 (连续朗读)"):
+    with st.spinner("正在光速合成音频，马上就好..."):
+        audio_bytes = generate_unit_audio(audio_text)
+        st.audio(audio_bytes, format='audio/mp3', autoplay=True)
+        st.success("合成完毕！音频生成后不消耗流量，可以直接后台挂机听啦。")
 
 st.markdown("---")
 
 # ================= 7. 列表渲染 (UI 展示) =================
-# 表头
 col1, col2 = st.columns(2)
 with col1:
     st.markdown("**英文单词**" if show_english else "")
@@ -104,7 +102,6 @@ with col2:
 
 st.divider()
 
-# 逐行显示单词
 for idx, row in df_unit.iterrows():
     col1, col2 = st.columns(2)
     with col1:
@@ -115,8 +112,4 @@ for idx, row in df_unit.iterrows():
             st.markdown(f"{row['Chinese']}")
     st.divider()
 
-# ================= 8. 底部快捷翻页 =================
-col_prev, col_mid, col_next = st.columns([1, 2, 1])
-# 由于 Streamlit 的 selectbox 限制，底部按钮用来提示用户去侧边栏切换
-with col_mid:
-    st.caption("💡 提示：请在左侧边栏切换上下单元")
+st.caption("💡 提示：请在左侧边栏切换上下单元")
