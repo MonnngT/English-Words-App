@@ -38,11 +38,11 @@ for i in range(total_units):
 with st.sidebar:
     st.header("⚙️ 学习控制台")
     
-    selected_unit_str = st.selectbox("📚 选择要学习的单元：", unit_options)
+    selected_unit_str = st.selectbox("📚 选择单元：", unit_options)
     current_unit_idx = unit_options.index(selected_unit_str)
     
     st.markdown("---")
-    st.subheader("👁️ 显示与排序")
+    st.subheader("👁️ 显隐与乱序")
     show_english = st.checkbox("显示英文 (English)", value=True)
     show_chinese = st.checkbox("显示中文 (释义)", value=True)
     
@@ -57,16 +57,10 @@ with st.sidebar:
         st.warning("请至少选择显示一种语言哦！")
         
     st.markdown("---")
-    st.subheader("🔊 语音设置")
-    
-    # 新增：语速设置
-    speed_option = st.radio("朗读语速：", ["正常速度", "放慢发音 (Slow)"])
+    st.subheader("🔊 语速设置")
+    # 保留语速切换功能，以防遇到长难词需要慢速听
+    speed_option = st.radio("选择单个词的朗读语速：", ["正常语速", "放慢发音 (Slow)"])
     is_slow_mode = (speed_option == "放慢发音 (Slow)")
-    
-    # 新增：停顿设置
-    gap_option = st.radio("单词间隔时长：", ["短停顿 (紧凑连贯)", "长停顿 (留白回想)"])
-    # 逗号停顿短且音调平稳，句号停顿长但带有句末降调
-    separator = ", " if gap_option == "短停顿 (紧凑连贯)" else ". "
 
 # ================= 5. 数据处理 =================
 start_index = current_unit_idx * WORDS_PER_UNIT
@@ -76,8 +70,7 @@ df_unit = df_words.iloc[start_index:end_index].copy()
 if is_shuffle:
     df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
-# ================= 6. 音频生成 (带参数缓存) =================
-# 把语速参数 is_slow_mode 加进缓存条件，这样切换语速时会自动重新生成音频
+# ================= 6. 音频生成 =================
 @st.cache_data(show_spinner=False)
 def generate_unit_audio(text_to_read, slow_mode):
     tts = gTTS(text=text_to_read, lang='en', slow=slow_mode)
@@ -88,16 +81,17 @@ def generate_unit_audio(text_to_read, slow_mode):
 
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
 
-# 根据用户选择的间隔符（逗号或句号）拼接单词
-audio_text = separator.join(df_unit['English'].tolist())
+# 核心修改点：使用“句号+换行”来连接单词。
+# 在 gTTS 语音引擎中，这会强制产生大约 0.5 秒的标准停顿，且不会拉长音调
+audio_text = ".\n".join(df_unit['English'].tolist()) + "."
 
 st.markdown("---")
     
-if st.button("🔊 播放英文音频 (连续朗读)"):
+if st.button("🔊 播放本组英文 (单词间停顿 0.5 秒)"):
     with st.spinner("正在生成音频..."):
         audio_bytes = generate_unit_audio(audio_text, is_slow_mode)
         st.audio(audio_bytes, format='audio/mp3', autoplay=True)
-        st.success("合成完毕！可以直接后台挂机听啦。")
+        st.success("合成完毕！现在每个单词之间有清晰的 0.5 秒停顿。")
 
 st.markdown("---")
 
@@ -120,4 +114,4 @@ for idx, row in df_unit.iterrows():
             st.markdown(f"{row['Chinese']}")
     st.divider()
 
-st.caption("💡 提示：请在左侧边栏控制台进行各类设置")
+st.caption("💡 提示：听的时候可以闭上眼睛，或者取消勾选左侧的“显示中文”，在大脑中回忆释义。")
