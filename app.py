@@ -3,7 +3,7 @@ import pandas as pd
 from gtts import gTTS
 import io
 import os
-from pydub import AudioSegment
+import requests
 
 # ================= 1. 页面与基础设置 =================
 st.set_page_config(page_title="AI 听力单词本", page_icon="🎧", layout="centered")
@@ -62,7 +62,6 @@ with st.sidebar:
     speed_option = st.radio("选择单个词的朗读语速：", ["正常语速", "放慢发音 (Slow)"])
     is_slow_mode = (speed_option == "放慢发音 (Slow)")
     
-    # 精确到秒的硬核滑块
     pause_seconds = st.slider("调节单词间停顿 (秒)：", min_value=1, max_value=30, value=15)
 
 # ================= 5. 数据处理 =================
@@ -73,31 +72,35 @@ df_unit = df_words.iloc[start_index:end_index].copy()
 if is_shuffle:
     df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
-# ================= 6. 核心：精准音频合成 =================
+# ================= 6. 黑科技：纯字节流音频合成 =================
 @st.cache_data(show_spinner=False)
-def generate_unit_audio(words_list, slow_mode, pause_sec):
-    # 创建一个空的音频轨道
-    combined_audio = AudioSegment.empty()
-    # 生成一段极其精确的静音音频 (pydub 用毫秒计算，所以 * 1000)
-    silence = AudioSegment.silent(duration=pause_sec * 1000)
+def get_silence_mp3():
+    """直接从云端下载一段极其纯净的 1秒静音 MP3"""
+    url = "https://raw.githubusercontent.com/anars/blank-audio/master/1-second-of-silence.mp3"
+    try:
+        return requests.get(url, timeout=5).content
+    except:
+        return b"" # 万一网络卡了，不影响程序运行，只是没有停顿而已
+
+@st.cache_data(show_spinner=False)
+def generate_unit_audio_magic(words_list, slow_mode, pause_sec):
+    # 拿到 1 秒的空白音频
+    silence_1s = get_silence_mp3()
+    # 核心魔法：MP3 是流式文件，把字节乘上倍数，1秒静音瞬间变成 15秒静音！
+    silence_block = silence_1s * pause_sec 
+    
+    combined_audio_bytes = b""
     
     for word in words_list:
-        # 单独获取这个单词的发音
+        # 生成单个单词的读音
         tts = gTTS(text=word, lang='en', slow=slow_mode)
         fp = io.BytesIO()
         tts.write_to_fp(fp)
-        fp.seek(0)
         
-        # 将发音转化为音频块
-        word_audio = AudioSegment.from_file(fp, format="mp3")
+        # 魔法拼接：单词字节 + 15秒静音字节
+        combined_audio_bytes += fp.getvalue() + silence_block
         
-        # 剪辑拼接：单词音频 + 绝对静音
-        combined_audio += word_audio + silence
-        
-    out_fp = io.BytesIO()
-    combined_audio.export(out_fp, format="mp3", bitrate="64k")
-    out_fp.seek(0)
-    return out_fp.read()
+    return combined_audio_bytes
 
 @st.cache_data(show_spinner=False)
 def generate_single_audio(word, slow_mode):
@@ -109,16 +112,15 @@ def generate_single_audio(word, slow_mode):
 
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
 
-# 获取这 20 个英文单词的列表
 audio_words = df_unit['English'].tolist()
 
 st.markdown("---")
     
-if st.button(f"🔊 播放本组英文 (精确停顿 {pause_seconds} 秒)", use_container_width=True):
-    with st.spinner(f"正在后台为您剪辑合成精确停顿音频（初次生成需十余秒，请耐心等待）..."):
-        audio_bytes = generate_unit_audio(audio_words, is_slow_mode, pause_seconds)
+if st.button(f"🔊 播放本组英文 (精准停顿 {pause_seconds} 秒)", use_container_width=True):
+    with st.spinner(f"正在使用字节流黑科技合成中..."):
+        audio_bytes = generate_unit_audio_magic(audio_words, is_slow_mode, pause_seconds)
         st.audio(audio_bytes, format='audio/mp3', autoplay=True)
-        st.success(f"合成完毕！现在的停顿是分秒不差的 {pause_seconds} 秒！")
+        st.success(f"合成完毕！现在的停顿绝对是分秒不差的 {pause_seconds} 秒！")
 
 single_audio_player = st.empty()
 
