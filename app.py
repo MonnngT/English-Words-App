@@ -80,4 +80,5 @@ with col3:
         if st.session_state.word_index < total_words - 1:
             st.session_state.word_index += 1
             st.session_state.show_answer = False
+
             st.rerun()
