@@ -3,7 +3,9 @@ import pandas as pd
 from gtts import gTTS
 import io
 import os
-import requests
+import base64
+import json
+import streamlit.components.v1 as components
 
 # ================= 1. 页面与基础设置 =================
 st.set_page_config(page_title="AI 听力单词本", page_icon="🎧", layout="centered")
@@ -72,35 +74,18 @@ df_unit = df_words.iloc[start_index:end_index].copy()
 if is_shuffle:
     df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
-# ================= 6. 黑科技：纯字节流音频合成 =================
+# ================= 6. 终极智能前端播放器 =================
 @st.cache_data(show_spinner=False)
-def get_silence_mp3():
-    """直接从云端下载一段极其纯净的 1秒静音 MP3"""
-    url = "https://raw.githubusercontent.com/anars/blank-audio/master/1-second-of-silence.mp3"
-    try:
-        return requests.get(url, timeout=5).content
-    except:
-        return b"" # 万一网络卡了，不影响程序运行，只是没有停顿而已
-
-@st.cache_data(show_spinner=False)
-def generate_unit_audio_magic(words_list, slow_mode, pause_sec):
-    # 拿到 1 秒的空白音频
-    silence_1s = get_silence_mp3()
-    # 核心魔法：MP3 是流式文件，把字节乘上倍数，1秒静音瞬间变成 15秒静音！
-    silence_block = silence_1s * pause_sec 
-    
-    combined_audio_bytes = b""
-    
+def get_audio_b64_list(words_list, slow_mode):
+    """将单词转化为 Base64 音频流发给网页前端"""
+    b64_list = []
     for word in words_list:
-        # 生成单个单词的读音
         tts = gTTS(text=word, lang='en', slow=slow_mode)
         fp = io.BytesIO()
         tts.write_to_fp(fp)
-        
-        # 魔法拼接：单词字节 + 15秒静音字节
-        combined_audio_bytes += fp.getvalue() + silence_block
-        
-    return combined_audio_bytes
+        b64 = base64.b64encode(fp.getvalue()).decode('utf-8')
+        b64_list.append(b64)
+    return b64_list
 
 @st.cache_data(show_spinner=False)
 def generate_single_audio(word, slow_mode):
@@ -111,19 +96,94 @@ def generate_single_audio(word, slow_mode):
     return fp.read()
 
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
+st.markdown("---")
 
 audio_words = df_unit['English'].tolist()
 
-st.markdown("---")
+with st.spinner("正在加载智能播放器..."):
+    b64_audios = get_audio_b64_list(audio_words, is_slow_mode)
+
+# 内嵌定制的 HTML+JS 播放器
+html_code = f"""
+<div style="font-family: sans-serif; padding: 15px; background-color: #f0f2f6; border-radius: 10px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
+    <button id="playBtn" style="background-color: #ff4b4b; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; transition: 0.3s;">
+        🔊 开始播放本组英文 (精确停顿 {pause_seconds} 秒)
+    </button>
+    <button id="stopBtn" style="background-color: #666; color: white; border: none; padding: 8px 16px; font-size: 14px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; display: none;">
+        ⏹ 停止播放
+    </button>
+    <div id="status" style="margin-top: 15px; font-size: 16px; color: #31333F; font-weight: bold;">
+        等待播放...
+    </div>
+    <audio id="audioPlayer"></audio>
+</div>
+
+<script>
+    const words = {json.dumps(audio_words)};
+    const audios = {json.dumps(b64_audios)};
+    const pauseTime = {pause_seconds} * 1000;
     
-if st.button(f"🔊 播放本组英文 (精准停顿 {pause_seconds} 秒)", use_container_width=True):
-    with st.spinner(f"正在使用字节流黑科技合成中..."):
-        audio_bytes = generate_unit_audio_magic(audio_words, is_slow_mode, pause_seconds)
-        st.audio(audio_bytes, format='audio/mp3', autoplay=True)
-        st.success(f"合成完毕！现在的停顿绝对是分秒不差的 {pause_seconds} 秒！")
+    let currentIndex = 0;
+    let isPlaying = false;
+    let timer = null;
+    
+    const player = document.getElementById('audioPlayer');
+    const playBtn = document.getElementById('playBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const status = document.getElementById('status');
+    
+    function resetPlayer() {{
+        isPlaying = false;
+        currentIndex = 0;
+        clearTimeout(timer);
+        player.pause();
+        playBtn.style.display = "block";
+        stopBtn.style.display = "none";
+        status.innerText = "播放已停止";
+        status.style.color = "#31333F";
+    }}
+
+    playBtn.onclick = () => {{
+        isPlaying = true;
+        currentIndex = 0;
+        playBtn.style.display = "none";
+        stopBtn.style.display = "block";
+        playNext();
+    }};
+    
+    stopBtn.onclick = resetPlayer;
+    
+    function playNext() {{
+        if (!isPlaying) return;
+        
+        if (currentIndex < words.length) {{
+            status.innerText = "🔊 正在朗读: " + words[currentIndex];
+            status.style.color = "#ff4b4b";
+            player.src = "data:audio/mp3;base64," + audios[currentIndex];
+            player.play();
+            
+            player.onended = () => {{
+                if (!isPlaying) return;
+                currentIndex++;
+                if (currentIndex < words.length) {{
+                    status.innerText = "⏳ 思考中 (" + {pause_seconds} + "秒)...";
+                    status.style.color = "#0083B8";
+                    timer = setTimeout(playNext, pauseTime);
+                }} else {{
+                    resetPlayer();
+                    status.innerText = "🎉 本组播放完毕！";
+                    status.style.color = "#28a745";
+                }}
+            }};
+        }}
+    }}
+</script>
+"""
+
+# 将播放器嵌入页面
+components.html(html_code, height=160)
 
 single_audio_player = st.empty()
-
 st.markdown("---")
 
 # ================= 7. 列表渲染 (UI 展示) =================
@@ -154,3 +214,5 @@ for idx, row in df_unit.iterrows():
             st.markdown(f"{row['Chinese']}")
             
     st.divider()
+
+st.caption("💡 提示：点击上方的红色大按钮开启连读，在下方列表中点击小喇叭可单独发音。")
