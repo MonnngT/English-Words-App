@@ -61,8 +61,7 @@ with st.sidebar:
     speed_option = st.radio("选择单个词的朗读语速：", ["正常语速", "放慢发音 (Slow)"])
     is_slow_mode = (speed_option == "放慢发音 (Slow)")
     
-    # 核心新增功能：自由调节停顿长度的滑块
-    pause_level = st.slider("调节单词间停顿长度：", min_value=1, max_value=10, value=5, help="数字越大，AI 在两个单词之间的深呼吸停顿时间就越长。")
+    pause_level = st.slider("调节单词间停顿长度：", min_value=1, max_value=10, value=5, help="仅对“播放本组英文”的连读生效。")
 
 # ================= 5. 数据处理 =================
 start_index = current_unit_idx * WORDS_PER_UNIT
@@ -72,7 +71,7 @@ df_unit = df_words.iloc[start_index:end_index].copy()
 if is_shuffle:
     df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
-# ================= 6. 音频生成 =================
+# ================= 6. 音频生成函数 =================
 @st.cache_data(show_spinner=False)
 def generate_unit_audio(text_to_read, slow_mode):
     tts = gTTS(text=text_to_read, lang='en', slow=slow_mode)
@@ -81,40 +80,65 @@ def generate_unit_audio(text_to_read, slow_mode):
     fp.seek(0)
     return fp.read()
 
+# 单个单词发音也使用缓存，点过一次后瞬间出声
+@st.cache_data(show_spinner=False)
+def generate_single_audio(word, slow_mode):
+    tts = gTTS(text=word, lang='en', slow=slow_mode)
+    fp = io.BytesIO()
+    tts.write_to_fp(fp)
+    fp.seek(0)
+    return fp.read()
+
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
 
-# 根据你拖动的滑块数字，动态生成成倍的句号和换行。
-# 比如滑块拉到 8，就会生成 8 次停顿叠加，达到超长的留白效果！
+# 连读音频文本构建
 separator = " . \n " * pause_level
 audio_text = separator.join(df_unit['English'].tolist()) + separator
 
 st.markdown("---")
     
-if st.button("🔊 播放本组英文"):
-    with st.spinner("正在按您的专属节奏生成音频..."):
+if st.button("🔊 播放本组英文 (连读磨耳朵)", use_container_width=True):
+    with st.spinner("正在按您的专属节奏生成连读音频..."):
         audio_bytes = generate_unit_audio(audio_text, is_slow_mode)
         st.audio(audio_bytes, format='audio/mp3', autoplay=True)
         st.success("合成完毕！尽情享受为你量身定制的思考时间吧。")
 
+# 这个空容器用来隐形播放你单独点击的单词发音，避免破坏下方列表排版
+single_audio_player = st.empty()
+
 st.markdown("---")
 
 # ================= 7. 列表渲染 (UI 展示) =================
-col1, col2 = st.columns(2)
-with col1:
+# 更新了列宽比例，给小喇叭留出位置
+col_btn, col_en, col_zh = st.columns([1, 4, 4])
+with col_btn:
+    st.markdown("**发音**")
+with col_en:
     st.markdown("**英文单词**" if show_english else "")
-with col2:
+with col_zh:
     st.markdown("**中文释义**" if show_chinese else "")
 
 st.divider()
 
 for idx, row in df_unit.iterrows():
-    col1, col2 = st.columns(2)
-    with col1:
+    col_btn, col_en, col_zh = st.columns([1, 4, 4])
+    
+    with col_btn:
+        # 每一个单词专属的发音按钮
+        if st.button("🔊", key=f"btn_play_{current_unit_idx}_{idx}", help=f"朗读 {row['English']}"):
+            single_bytes = generate_single_audio(row['English'], is_slow_mode)
+            # 在列表上方的隐形容器中自动播放
+            single_audio_player.audio(single_bytes, format='audio/mp3', autoplay=True)
+            
+    with col_en:
         if show_english:
+            # 点击单词发音后，给当前单词加个高亮提示 (可选)
             st.markdown(f"**{row['English']}**")
-    with col2:
+            
+    with col_zh:
         if show_chinese:
             st.markdown(f"{row['Chinese']}")
+            
     st.divider()
 
-st.caption("💡 提示：如果觉得停顿不合适，直接去左侧边栏拉动滑块，然后重新点击播放即可！")
+st.caption("💡 提示：点击单词左侧的 🔊 即可随时单点发音。语速快慢由左侧控制台统一决定。")
