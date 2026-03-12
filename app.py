@@ -58,7 +58,6 @@ with st.sidebar:
         
     st.markdown("---")
     st.subheader("🔊 语速设置")
-    # 保留语速切换功能，以防遇到长难词需要慢速听
     speed_option = st.radio("选择单个词的朗读语速：", ["正常语速", "放慢发音 (Slow)"])
     is_slow_mode = (speed_option == "放慢发音 (Slow)")
 
@@ -81,17 +80,17 @@ def generate_unit_audio(text_to_read, slow_mode):
 
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
 
-# 核心修改点：使用“句号+换行”来连接单词。
-# 在 gTTS 语音引擎中，这会强制产生大约 0.5 秒的标准停顿，且不会拉长音调
-audio_text = ".\n".join(df_unit['English'].tolist()) + "."
+# 核心修改点：使用 ". . \n" (多个句号加空格和换行) 
+# 这样能成功欺骗 gTTS 引擎，强行把单词之间的停顿拉长到约 1 秒钟
+audio_text = ". . \n".join(df_unit['English'].tolist()) + "."
 
 st.markdown("---")
     
-if st.button("🔊 播放本组英文 (单词间停顿 0.5 秒)"):
+if st.button("🔊 播放本组英文 (单词间停顿约 1 秒)"):
     with st.spinner("正在生成音频..."):
         audio_bytes = generate_unit_audio(audio_text, is_slow_mode)
         st.audio(audio_bytes, format='audio/mp3', autoplay=True)
-        st.success("合成完毕！现在每个单词之间有清晰的 0.5 秒停顿。")
+        st.success("合成完毕！现在每个单词之间有大约 1 秒的充足回想时间。")
 
 st.markdown("---")
 
@@ -114,4 +113,4 @@ for idx, row in df_unit.iterrows():
             st.markdown(f"{row['Chinese']}")
     st.divider()
 
-st.caption("💡 提示：听的时候可以闭上眼睛，或者取消勾选左侧的“显示中文”，在大脑中回忆释义。")
+st.caption("💡 提示：听的时候可以闭上眼睛，或者取消勾选左侧的“显示中文”，利用这 1 秒钟在大脑中回忆释义。")
