@@ -74,10 +74,9 @@ df_unit = df_words.iloc[start_index:end_index].copy()
 if is_shuffle:
     df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
-# ================= 6. 终极智能前端播放器 =================
+# ================= 6. 支持暂停/继续的前端播放器 =================
 @st.cache_data(show_spinner=False)
 def get_audio_b64_list(words_list, slow_mode):
-    """将单词转化为 Base64 音频流发给网页前端"""
     b64_list = []
     for word in words_list:
         tts = gTTS(text=word, lang='en', slow=slow_mode)
@@ -103,15 +102,21 @@ audio_words = df_unit['English'].tolist()
 with st.spinner("正在加载智能播放器..."):
     b64_audios = get_audio_b64_list(audio_words, is_slow_mode)
 
-# 内嵌定制的 HTML+JS 播放器
 html_code = f"""
 <div style="font-family: sans-serif; padding: 15px; background-color: #f0f2f6; border-radius: 10px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
-    <button id="playBtn" style="background-color: #ff4b4b; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; transition: 0.3s;">
-        🔊 开始播放本组英文 (精确停顿 {pause_seconds} 秒)
-    </button>
-    <button id="stopBtn" style="background-color: #666; color: white; border: none; padding: 8px 16px; font-size: 14px; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; display: none;">
-        ⏹ 停止播放
-    </button>
+    
+    <div style="display: flex; gap: 10px; width: 100%;">
+        <button id="playBtn" style="flex: 1; background-color: #ff4b4b; color: white; border: none; padding: 12px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s;">
+            🔊 开始播放本组英文 (精确停顿 {pause_seconds} 秒)
+        </button>
+        <button id="pauseBtn" style="flex: 1; display: none; background-color: #ffc107; color: #333; border: none; padding: 12px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s;">
+            ⏸️ 暂停播放
+        </button>
+        <button id="resetBtn" style="flex: 1; display: none; background-color: #666; color: white; border: none; padding: 12px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s;">
+            🔄 从头重播
+        </button>
+    </div>
+
     <div id="status" style="margin-top: 15px; font-size: 16px; color: #31333F; font-weight: bold;">
         等待播放...
     </div>
@@ -125,33 +130,70 @@ html_code = f"""
     
     let currentIndex = 0;
     let isPlaying = false;
+    let isGap = false; // 记录是否处于停顿等待阶段
     let timer = null;
     
     const player = document.getElementById('audioPlayer');
     const playBtn = document.getElementById('playBtn');
-    const stopBtn = document.getElementById('stopBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const resetBtn = document.getElementById('resetBtn');
     const status = document.getElementById('status');
     
-    function resetPlayer() {{
+    function resetAll() {{
         isPlaying = false;
+        isGap = false;
         currentIndex = 0;
         clearTimeout(timer);
         player.pause();
+        player.src = "";
+        
+        playBtn.innerText = "🔊 开始播放本组英文 (精确停顿 {pause_seconds} 秒)";
         playBtn.style.display = "block";
-        stopBtn.style.display = "none";
-        status.innerText = "播放已停止";
+        pauseBtn.style.display = "none";
+        resetBtn.style.display = "none";
+        
+        status.innerText = "等待播放...";
         status.style.color = "#31333F";
     }}
 
     playBtn.onclick = () => {{
         isPlaying = true;
-        currentIndex = 0;
         playBtn.style.display = "none";
-        stopBtn.style.display = "block";
-        playNext();
+        pauseBtn.style.display = "block";
+        resetBtn.style.display = "block";
+        
+        if (currentIndex >= words.length) {{
+            currentIndex = 0;
+        }}
+        
+        if (isGap) {{
+            // 如果是在等待期间点了继续播放，直接跳过剩余等待时间，读下一个词
+            isGap = false;
+            playNext();
+        }} else if (player.src && player.currentTime > 0 && !player.ended) {{
+            // 如果是在单词发音中途暂停的，恢复刚才的播放进度
+            status.innerText = "🔊 正在朗读: " + words[currentIndex];
+            status.style.color = "#ff4b4b";
+            player.play();
+        }} else {{
+            playNext();
+        }}
     }};
     
-    stopBtn.onclick = resetPlayer;
+    pauseBtn.onclick = () => {{
+        isPlaying = false;
+        playBtn.innerText = "▶️ 继续播放";
+        playBtn.style.display = "block";
+        pauseBtn.style.display = "none";
+        
+        player.pause();
+        clearTimeout(timer);
+        
+        status.innerText = "⏸️ 已暂停: " + (currentIndex < words.length ? words[currentIndex] : "");
+        status.style.color = "#888";
+    }};
+    
+    resetBtn.onclick = resetAll;
     
     function playNext() {{
         if (!isPlaying) return;
@@ -166,11 +208,15 @@ html_code = f"""
                 if (!isPlaying) return;
                 currentIndex++;
                 if (currentIndex < words.length) {{
+                    isGap = true;
                     status.innerText = "⏳ 思考中 (" + {pause_seconds} + "秒)...";
                     status.style.color = "#0083B8";
-                    timer = setTimeout(playNext, pauseTime);
+                    timer = setTimeout(() => {{
+                        isGap = false;
+                        playNext();
+                    }}, pauseTime);
                 }} else {{
-                    resetPlayer();
+                    resetAll();
                     status.innerText = "🎉 本组播放完毕！";
                     status.style.color = "#28a745";
                 }}
@@ -180,9 +226,7 @@ html_code = f"""
 </script>
 """
 
-# 将播放器嵌入页面
 components.html(html_code, height=160)
-
 single_audio_player = st.empty()
 st.markdown("---")
 
@@ -215,4 +259,4 @@ for idx, row in df_unit.iterrows():
             
     st.divider()
 
-st.caption("💡 提示：点击上方的红色大按钮开启连读，在下方列表中点击小喇叭可单独发音。")
+st.caption("💡 提示：遇到需要重点记忆的单词，随时点击“⏸️暂停”。恢复时会完美接续当前进度。")
