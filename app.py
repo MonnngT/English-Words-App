@@ -57,9 +57,12 @@ with st.sidebar:
         st.warning("请至少选择显示一种语言哦！")
         
     st.markdown("---")
-    st.subheader("🔊 语速设置")
+    st.subheader("🔊 语音设置")
     speed_option = st.radio("选择单个词的朗读语速：", ["正常语速", "放慢发音 (Slow)"])
     is_slow_mode = (speed_option == "放慢发音 (Slow)")
+    
+    # 核心新增功能：自由调节停顿长度的滑块
+    pause_level = st.slider("调节单词间停顿长度：", min_value=1, max_value=10, value=5, help="数字越大，AI 在两个单词之间的深呼吸停顿时间就越长。")
 
 # ================= 5. 数据处理 =================
 start_index = current_unit_idx * WORDS_PER_UNIT
@@ -80,18 +83,18 @@ def generate_unit_audio(text_to_read, slow_mode):
 
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
 
-# 核心修改点：叠加 3 个 " . \n"！
-# 这样能成功欺骗 gTTS 引擎，强行把单词之间的停顿拉长到 2~3 秒钟
-separator = " . \n . \n . \n"
+# 根据你拖动的滑块数字，动态生成成倍的句号和换行。
+# 比如滑块拉到 8，就会生成 8 次停顿叠加，达到超长的留白效果！
+separator = " . \n " * pause_level
 audio_text = separator.join(df_unit['English'].tolist()) + separator
 
 st.markdown("---")
     
-if st.button("🔊 播放本组英文 (超长停顿 2~3 秒)"):
-    with st.spinner("正在生成音频..."):
+if st.button("🔊 播放本组英文"):
+    with st.spinner("正在按您的专属节奏生成音频..."):
         audio_bytes = generate_unit_audio(audio_text, is_slow_mode)
         st.audio(audio_bytes, format='audio/mp3', autoplay=True)
-        st.success("合成完毕！现在每个单词之间有非常充足的思考时间。")
+        st.success("合成完毕！尽情享受为你量身定制的思考时间吧。")
 
 st.markdown("---")
 
@@ -114,4 +117,4 @@ for idx, row in df_unit.iterrows():
             st.markdown(f"{row['Chinese']}")
     st.divider()
 
-st.caption("💡 提示：遇到长难词时，记得在左侧边栏开启“放慢发音 (Slow)”。")
+st.caption("💡 提示：如果觉得停顿不合适，直接去左侧边栏拉动滑块，然后重新点击播放即可！")
