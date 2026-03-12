@@ -64,7 +64,8 @@ with st.sidebar:
     speed_option = st.radio("选择单个词的朗读语速：", ["正常语速", "放慢发音 (Slow)"])
     is_slow_mode = (speed_option == "放慢发音 (Slow)")
     
-    pause_seconds = st.slider("调节单词间停顿 (秒)：", min_value=1, max_value=30, value=15)
+    # === 核心修改点：把滑块的默认值改为了 2 ===
+    pause_seconds = st.slider("调节单词间停顿 (秒)：", min_value=1, max_value=30, value=2)
 
 # ================= 5. 数据处理 =================
 start_index = current_unit_idx * WORDS_PER_UNIT
