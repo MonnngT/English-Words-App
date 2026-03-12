@@ -3,8 +3,6 @@ import pandas as pd
 from gtts import gTTS
 import io
 import os
-
-# 用 pydub 拼接音频 + 插入精准静音
 from pydub import AudioSegment
 
 # ================= 1. 页面与基础设置 =================
@@ -24,7 +22,7 @@ try:
     df_words = load_data()
     total_words = len(df_words)
 except FileNotFoundError:
-    st.error("找不到单词本文件！请确保你的 GitHub 仓库里有 words.csv 或 word.csv 文件。")
+    st.error("找不到单词本文件！请确保仓库里有 words.csv。")
     st.stop()
 
 # ================= 3. 单元划分 =================
@@ -64,11 +62,8 @@ with st.sidebar:
     speed_option = st.radio("选择单个词的朗读语速：", ["正常语速", "放慢发音 (Slow)"])
     is_slow_mode = (speed_option == "放慢发音 (Slow)")
     
-    pause_seconds = st.slider(
-        "调节单词间停顿 (秒)：",
-        min_value=1, max_value=30, value=1,
-        help="精准静音插入，1秒就是真实的1秒停顿。"
-    )
+    # 精确到秒的硬核滑块
+    pause_seconds = st.slider("调节单词间停顿 (秒)：", min_value=1, max_value=30, value=15)
 
 # ================= 5. 数据处理 =================
 start_index = current_unit_idx * WORDS_PER_UNIT
@@ -78,56 +73,58 @@ df_unit = df_words.iloc[start_index:end_index].copy()
 if is_shuffle:
     df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
-# ================= 6. 音频生成函数 =================
+# ================= 6. 核心：精准音频合成 =================
+@st.cache_data(show_spinner=False)
+def generate_unit_audio(words_list, slow_mode, pause_sec):
+    # 创建一个空的音频轨道
+    combined_audio = AudioSegment.empty()
+    # 生成一段极其精确的静音音频 (pydub 用毫秒计算，所以 * 1000)
+    silence = AudioSegment.silent(duration=pause_sec * 1000)
+    
+    for word in words_list:
+        # 单独获取这个单词的发音
+        tts = gTTS(text=word, lang='en', slow=slow_mode)
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        
+        # 将发音转化为音频块
+        word_audio = AudioSegment.from_file(fp, format="mp3")
+        
+        # 剪辑拼接：单词音频 + 绝对静音
+        combined_audio += word_audio + silence
+        
+    out_fp = io.BytesIO()
+    combined_audio.export(out_fp, format="mp3", bitrate="64k")
+    out_fp.seek(0)
+    return out_fp.read()
 
 @st.cache_data(show_spinner=False)
-def generate_single_audio_bytes(word, slow_mode):
-    """生成单个单词的 MP3 bytes"""
+def generate_single_audio(word, slow_mode):
     tts = gTTS(text=word, lang='en', slow=slow_mode)
     fp = io.BytesIO()
     tts.write_to_fp(fp)
     fp.seek(0)
     return fp.read()
 
-@st.cache_data(show_spinner=False)
-def generate_unit_audio_with_silence(words: tuple, slow_mode: bool, pause_ms: int) -> bytes:
-    """
-    逐词生成 TTS，再用 pydub 拼接精准静音段，返回合并后的 MP3 bytes。
-    words 用 tuple 以便 st.cache_data 可以哈希。
-    """
-    silence = AudioSegment.silent(duration=pause_ms)  # 精准静音
-    combined = AudioSegment.empty()
-
-    for word in words:
-        word_bytes = generate_single_audio_bytes(word, slow_mode)
-        word_seg = AudioSegment.from_mp3(io.BytesIO(word_bytes))
-        combined += word_seg + silence
-
-    out = io.BytesIO()
-    combined.export(out, format="mp3")
-    out.seek(0)
-    return out.read()
-
-# ================= 7. 主界面 =================
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
-st.markdown("---")
 
-if st.button(
-    f"🔊 播放本组英文 (连读磨耳朵，停顿 {pause_seconds} 秒)",
-    use_container_width=True
-):
-    with st.spinner("正在合成音频，请稍候..."):
-        words_tuple = tuple(df_unit['English'].tolist())
-        pause_ms = pause_seconds * 1000  # 秒 → 毫秒，精准无误
-        audio_bytes = generate_unit_audio_with_silence(words_tuple, is_slow_mode, pause_ms)
+# 获取这 20 个英文单词的列表
+audio_words = df_unit['English'].tolist()
+
+st.markdown("---")
+    
+if st.button(f"🔊 播放本组英文 (精确停顿 {pause_seconds} 秒)", use_container_width=True):
+    with st.spinner(f"正在后台为您剪辑合成精确停顿音频（初次生成需十余秒，请耐心等待）..."):
+        audio_bytes = generate_unit_audio(audio_words, is_slow_mode, pause_seconds)
         st.audio(audio_bytes, format='audio/mp3', autoplay=True)
-        st.success(f"合成完毕！每个单词之间有精准的 {pause_seconds} 秒静音。")
+        st.success(f"合成完毕！现在的停顿是分秒不差的 {pause_seconds} 秒！")
 
 single_audio_player = st.empty()
 
 st.markdown("---")
 
-# ================= 8. 列表渲染 =================
+# ================= 7. 列表渲染 (UI 展示) =================
 col_btn, col_en, col_zh = st.columns([1, 4, 4])
 with col_btn:
     st.markdown("**发音**")
@@ -143,7 +140,7 @@ for idx, row in df_unit.iterrows():
     
     with col_btn:
         if st.button("🔊", key=f"btn_play_{current_unit_idx}_{idx}", help=f"朗读 {row['English']}"):
-            single_bytes = generate_single_audio_bytes(row['English'], is_slow_mode)
+            single_bytes = generate_single_audio(row['English'], is_slow_mode)
             single_audio_player.audio(single_bytes, format='audio/mp3', autoplay=True)
             
     with col_en:
@@ -155,5 +152,3 @@ for idx, row in df_unit.iterrows():
             st.markdown(f"{row['Chinese']}")
             
     st.divider()
-
-st.caption("💡 提示：点击单词左侧的 🔊 即可随时单点发音。")
