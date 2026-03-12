@@ -24,7 +24,7 @@ except FileNotFoundError:
     st.error("找不到单词本文件！请确保你的 GitHub 仓库里有 words.csv 或 word.csv 文件。")
     st.stop()
 
-# ================= 3. 单元划分逻辑 =================
+# ================= 3. 单元划分 =================
 WORDS_PER_UNIT = 20
 total_units = (total_words + WORDS_PER_UNIT - 1) // WORDS_PER_UNIT
 
@@ -46,33 +46,41 @@ with st.sidebar:
     show_english = st.checkbox("显示英文 (English)", value=True)
     show_chinese = st.checkbox("显示中文 (释义)", value=True)
     
-    # 新增：打乱顺序开关
     is_shuffle = st.toggle("🔀 开启打乱顺序")
     if is_shuffle:
         if 'shuffle_seed' not in st.session_state:
             st.session_state.shuffle_seed = 42
-        # 提供一个按钮，如果觉得这遍乱序背熟了，可以换一种乱序方式
         if st.button("🔄 换一种打乱方式"):
             st.session_state.shuffle_seed += 1
 
     if not show_english and not show_chinese:
         st.warning("请至少选择显示一种语言哦！")
+        
+    st.markdown("---")
+    st.subheader("🔊 语音设置")
+    
+    # 新增：语速设置
+    speed_option = st.radio("朗读语速：", ["正常速度", "放慢发音 (Slow)"])
+    is_slow_mode = (speed_option == "放慢发音 (Slow)")
+    
+    # 新增：停顿设置
+    gap_option = st.radio("单词间隔时长：", ["短停顿 (紧凑连贯)", "长停顿 (留白回想)"])
+    # 逗号停顿短且音调平稳，句号停顿长但带有句末降调
+    separator = ", " if gap_option == "短停顿 (紧凑连贯)" else ". "
 
-# ================= 5. 提取并处理当前单元的数据 =================
+# ================= 5. 数据处理 =================
 start_index = current_unit_idx * WORDS_PER_UNIT
 end_index = min((current_unit_idx + 1) * WORDS_PER_UNIT, total_words)
-# 复制一份当前单元的数据，避免修改原始数据
 df_unit = df_words.iloc[start_index:end_index].copy()
 
-# 如果开启了乱序，对当前这 20 个单词进行重新洗牌
 if is_shuffle:
     df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
-# ================= 6. 一键连读音频生成 (纯英文优化版) =================
+# ================= 6. 音频生成 (带参数缓存) =================
+# 把语速参数 is_slow_mode 加进缓存条件，这样切换语速时会自动重新生成音频
 @st.cache_data(show_spinner=False)
-def generate_unit_audio(text_to_read):
-    # 固定使用英文引擎，去掉了中文切换
-    tts = gTTS(text=text_to_read, lang='en')
+def generate_unit_audio(text_to_read, slow_mode):
+    tts = gTTS(text=text_to_read, lang='en', slow=slow_mode)
     fp = io.BytesIO()
     tts.write_to_fp(fp)
     fp.seek(0)
@@ -80,16 +88,16 @@ def generate_unit_audio(text_to_read):
 
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
 
-# 优化发音逻辑：只提取英文，并且用逗号分隔，让它读起来节奏更轻快连贯
-audio_text = ", ".join(df_unit['English'].tolist())
+# 根据用户选择的间隔符（逗号或句号）拼接单词
+audio_text = separator.join(df_unit['English'].tolist())
 
 st.markdown("---")
     
 if st.button("🔊 播放英文音频 (连续朗读)"):
-    with st.spinner("正在光速合成音频，马上就好..."):
-        audio_bytes = generate_unit_audio(audio_text)
+    with st.spinner("正在生成音频..."):
+        audio_bytes = generate_unit_audio(audio_text, is_slow_mode)
         st.audio(audio_bytes, format='audio/mp3', autoplay=True)
-        st.success("合成完毕！音频生成后不消耗流量，可以直接后台挂机听啦。")
+        st.success("合成完毕！可以直接后台挂机听啦。")
 
 st.markdown("---")
 
@@ -112,4 +120,4 @@ for idx, row in df_unit.iterrows():
             st.markdown(f"{row['Chinese']}")
     st.divider()
 
-st.caption("💡 提示：请在左侧边栏切换上下单元")
+st.caption("💡 提示：请在左侧边栏控制台进行各类设置")
