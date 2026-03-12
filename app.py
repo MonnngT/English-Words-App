@@ -3,6 +3,7 @@ import pandas as pd
 from gtts import gTTS
 import io
 import os
+from pydub import AudioSegment
 
 # ================= 1. 页面与基础设置 =================
 st.set_page_config(page_title="AI 听力单词本", page_icon="🎧", layout="centered")
@@ -21,7 +22,7 @@ try:
     df_words = load_data()
     total_words = len(df_words)
 except FileNotFoundError:
-    st.error("找不到单词本文件！请确保你的 GitHub 仓库里有 words.csv 或 word.csv 文件。")
+    st.error("找不到单词本文件！请确保仓库里有 words.csv。")
     st.stop()
 
 # ================= 3. 单元划分 =================
@@ -61,8 +62,8 @@ with st.sidebar:
     speed_option = st.radio("选择单个词的朗读语速：", ["正常语速", "放慢发音 (Slow)"])
     is_slow_mode = (speed_option == "放慢发音 (Slow)")
     
-    # 核心升级：直接调节秒数！默认 15 秒，最高支持 30 秒。
-    pause_seconds = st.slider("调节单词间停顿 (秒)：", min_value=1, max_value=30, value=15, help="设置 AI 读完一个单词后闭嘴等待的时间。")
+    # 精确到秒的硬核滑块
+    pause_seconds = st.slider("调节单词间停顿 (秒)：", min_value=1, max_value=30, value=15)
 
 # ================= 5. 数据处理 =================
 start_index = current_unit_idx * WORDS_PER_UNIT
@@ -72,14 +73,31 @@ df_unit = df_words.iloc[start_index:end_index].copy()
 if is_shuffle:
     df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
-# ================= 6. 音频生成函数 =================
+# ================= 6. 核心：精准音频合成 =================
 @st.cache_data(show_spinner=False)
-def generate_unit_audio(text_to_read, slow_mode):
-    tts = gTTS(text=text_to_read, lang='en', slow=slow_mode)
-    fp = io.BytesIO()
-    tts.write_to_fp(fp)
-    fp.seek(0)
-    return fp.read()
+def generate_unit_audio(words_list, slow_mode, pause_sec):
+    # 创建一个空的音频轨道
+    combined_audio = AudioSegment.empty()
+    # 生成一段极其精确的静音音频 (pydub 用毫秒计算，所以 * 1000)
+    silence = AudioSegment.silent(duration=pause_sec * 1000)
+    
+    for word in words_list:
+        # 单独获取这个单词的发音
+        tts = gTTS(text=word, lang='en', slow=slow_mode)
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        
+        # 将发音转化为音频块
+        word_audio = AudioSegment.from_file(fp, format="mp3")
+        
+        # 剪辑拼接：单词音频 + 绝对静音
+        combined_audio += word_audio + silence
+        
+    out_fp = io.BytesIO()
+    combined_audio.export(out_fp, format="mp3", bitrate="64k")
+    out_fp.seek(0)
+    return out_fp.read()
 
 @st.cache_data(show_spinner=False)
 def generate_single_audio(word, slow_mode):
@@ -91,18 +109,16 @@ def generate_single_audio(word, slow_mode):
 
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
 
-# 连读音频文本构建
-# 每一个 " . \n " 约等于 0.5 秒停顿。因此乘以 2，正好是用户选择的秒数！
-separator = " . \n " * (pause_seconds * 2)
-audio_text = separator.join(df_unit['English'].tolist()) + separator
+# 获取这 20 个英文单词的列表
+audio_words = df_unit['English'].tolist()
 
 st.markdown("---")
     
-if st.button(f"🔊 播放本组英文 (连读磨耳朵，停顿 {pause_seconds} 秒)", use_container_width=True):
-    with st.spinner("正在生成包含超长停顿的音频，可能需要稍等几秒..."):
-        audio_bytes = generate_unit_audio(audio_text, is_slow_mode)
+if st.button(f"🔊 播放本组英文 (精确停顿 {pause_seconds} 秒)", use_container_width=True):
+    with st.spinner(f"正在后台为您剪辑合成精确停顿音频（初次生成需十余秒，请耐心等待）..."):
+        audio_bytes = generate_unit_audio(audio_words, is_slow_mode, pause_seconds)
         st.audio(audio_bytes, format='audio/mp3', autoplay=True)
-        st.success("合成完毕！现在每个单词之间有充足的时间供你回忆。")
+        st.success(f"合成完毕！现在的停顿是分秒不差的 {pause_seconds} 秒！")
 
 single_audio_player = st.empty()
 
@@ -136,5 +152,3 @@ for idx, row in df_unit.iterrows():
             st.markdown(f"{row['Chinese']}")
             
     st.divider()
-
-st.caption("💡 提示：点击单词左侧的 🔊 即可随时单点发音。")
