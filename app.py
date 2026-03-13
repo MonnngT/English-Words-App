@@ -5,6 +5,7 @@ import io
 import os
 import base64
 import json
+import time  # 核心新增：用于生成时间戳欺骗浏览器
 import streamlit.components.v1 as components
 
 # ================= 1. 页面与基础设置 =================
@@ -64,7 +65,6 @@ with st.sidebar:
     speed_option = st.radio("选择单个词的朗读语速：", ["正常语速", "放慢发音 (Slow)"])
     is_slow_mode = (speed_option == "放慢发音 (Slow)")
     
-    # === 核心修改点：把滑块的默认值改为了 2 ===
     pause_seconds = st.slider("调节单词间停顿 (秒)：", min_value=1, max_value=30, value=2)
 
 # ================= 5. 数据处理 =================
@@ -131,7 +131,7 @@ html_code = f"""
     
     let currentIndex = 0;
     let isPlaying = false;
-    let isGap = false; // 记录是否处于停顿等待阶段
+    let isGap = false; 
     let timer = null;
     
     const player = document.getElementById('audioPlayer');
@@ -168,11 +168,9 @@ html_code = f"""
         }}
         
         if (isGap) {{
-            // 如果是在等待期间点了继续播放，直接跳过剩余等待时间，读下一个词
             isGap = false;
             playNext();
         }} else if (player.src && player.currentTime > 0 && !player.ended) {{
-            // 如果是在单词发音中途暂停的，恢复刚才的播放进度
             status.innerText = "🔊 正在朗读: " + words[currentIndex];
             status.style.color = "#ff4b4b";
             player.play();
@@ -248,7 +246,15 @@ for idx, row in df_unit.iterrows():
     with col_btn:
         if st.button("🔊", key=f"btn_play_{current_unit_idx}_{idx}", help=f"朗读 {row['English']}"):
             single_bytes = generate_single_audio(row['English'], is_slow_mode)
-            single_audio_player.audio(single_bytes, format='audio/mp3', autoplay=True)
+            b64_audio = base64.b64encode(single_bytes).decode("utf-8")
+            
+            # 核心修复：用原生的 HTML 播放器代替 Streamlit 的播放器，并加入随机时间戳
+            audio_html = f'''
+                <audio autoplay style="display:none;">
+                    <source src="data:audio/mp3;base64,{b64_audio}?t={time.time()}" type="audio/mp3">
+                </audio>
+            '''
+            single_audio_player.markdown(audio_html, unsafe_allow_html=True)
             
     with col_en:
         if show_english:
@@ -260,4 +266,4 @@ for idx, row in df_unit.iterrows():
             
     st.divider()
 
-st.caption("💡 提示：遇到需要重点记忆的单词，随时点击“⏸️暂停”。恢复时会完美接续当前进度。")
+st.caption("💡 提示：现在列表中的小喇叭支持无限次连点重复发声了！")
