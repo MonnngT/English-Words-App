@@ -5,7 +5,7 @@ import io
 import os
 import base64
 import json
-import time  # 核心新增：用于生成时间戳欺骗浏览器
+import time
 import streamlit.components.v1 as components
 
 # ================= 1. 页面与基础设置 =================
@@ -248,11 +248,14 @@ for idx, row in df_unit.iterrows():
             single_bytes = generate_single_audio(row['English'], is_slow_mode)
             b64_audio = base64.b64encode(single_bytes).decode("utf-8")
             
-            # 核心修复：用原生的 HTML 播放器代替 Streamlit 的播放器，并加入随机时间戳
+            # 核心修复：通过动态更改 div 的 id，强迫浏览器重新加载并播放音频，而不破坏 Base64 数据
+            unique_id = str(time.time()).replace(".", "")
             audio_html = f'''
-                <audio autoplay style="display:none;">
-                    <source src="data:audio/mp3;base64,{b64_audio}?t={time.time()}" type="audio/mp3">
-                </audio>
+                <div id="audio_{unique_id}">
+                    <audio autoplay style="display:none;">
+                        <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
+                    </audio>
+                </div>
             '''
             single_audio_player.markdown(audio_html, unsafe_allow_html=True)
             
