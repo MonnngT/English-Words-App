@@ -5,12 +5,19 @@ import io
 import os
 import base64
 import json
-import time
+import random  # 核心新增：用于生成随机空白尾巴
 import streamlit.components.v1 as components
 
 # ================= 1. 页面与基础设置 =================
 st.set_page_config(page_title="AI 听力单词本", page_icon="🎧", layout="centered")
 st.title("🎧 单元听力单词本")
+
+# 隐藏 Streamlit 自带的原生音频播放器 UI，保持页面清爽，只听声音不见控件
+st.markdown("""
+    <style>
+        audio { display: none !important; }
+    </style>
+""", unsafe_allow_html=True)
 
 # ================= 2. 加载数据 =================
 @st.cache_data
@@ -246,18 +253,13 @@ for idx, row in df_unit.iterrows():
     with col_btn:
         if st.button("🔊", key=f"btn_play_{current_unit_idx}_{idx}", help=f"朗读 {row['English']}"):
             single_bytes = generate_single_audio(row['English'], is_slow_mode)
-            b64_audio = base64.b64encode(single_bytes).decode("utf-8")
             
-            # 核心修复：通过动态更改 div 的 id，强迫浏览器重新加载并播放音频，而不破坏 Base64 数据
-            unique_id = str(time.time()).replace(".", "")
-            audio_html = f'''
-                <div id="audio_{unique_id}">
-                    <audio autoplay style="display:none;">
-                        <source src="data:audio/mp3;base64,{b64_audio}" type="audio/mp3">
-                    </audio>
-                </div>
-            '''
-            single_audio_player.markdown(audio_html, unsafe_allow_html=True)
+            # 核心魔法障眼法：随机生成 1 到 100 个看不见、听不着的空白尾巴字节
+            padding = b'\x00' * random.randint(1, 100)
+            
+            # 把尾巴追加在音频后面，骗过浏览器和 Streamlit，强制它每次都认为这是一个新文件并自动播放！
+            new_audio_bytes = single_bytes + padding
+            single_audio_player.audio(new_audio_bytes, format='audio/mp3', autoplay=True)
             
     with col_en:
         if show_english:
@@ -269,4 +271,4 @@ for idx, row in df_unit.iterrows():
             
     st.divider()
 
-st.caption("💡 提示：现在列表中的小喇叭支持无限次连点重复发声了！")
+st.caption("💡 提示：列表中的小喇叭已解除封印，支持无限次狂点连读！")
