@@ -5,14 +5,12 @@ import io
 import os
 import base64
 import json
-import random  # 核心新增：用于生成随机空白尾巴
 import streamlit.components.v1 as components
 
 # ================= 1. 页面与基础设置 =================
 st.set_page_config(page_title="AI 听力单词本", page_icon="🎧", layout="centered")
 st.title("🎧 单元听力单词本")
 
-# 隐藏 Streamlit 自带的原生音频播放器 UI，保持页面清爽，只听声音不见控件
 st.markdown("""
     <style>
         audio { display: none !important; }
@@ -82,7 +80,8 @@ df_unit = df_words.iloc[start_index:end_index].copy()
 if is_shuffle:
     df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
-# ================= 6. 支持暂停/继续的前端播放器 =================
+# ================= 6. 核心：生成所有音频数据 =================
+# 我们把这 20 个单词的音频一次性生成好，后面播放器和列表按钮都能直接复用，速度起飞！
 @st.cache_data(show_spinner=False)
 def get_audio_b64_list(words_list, slow_mode):
     b64_list = []
@@ -94,14 +93,6 @@ def get_audio_b64_list(words_list, slow_mode):
         b64_list.append(b64)
     return b64_list
 
-@st.cache_data(show_spinner=False)
-def generate_single_audio(word, slow_mode):
-    tts = gTTS(text=word, lang='en', slow=slow_mode)
-    fp = io.BytesIO()
-    tts.write_to_fp(fp)
-    fp.seek(0)
-    return fp.read()
-
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
 st.markdown("---")
 
@@ -110,17 +101,18 @@ audio_words = df_unit['English'].tolist()
 with st.spinner("正在加载智能播放器..."):
     b64_audios = get_audio_b64_list(audio_words, is_slow_mode)
 
+# ================= 7. 顶部连播控制台 (前端实现) =================
 html_code = f"""
 <div style="font-family: sans-serif; padding: 15px; background-color: #f0f2f6; border-radius: 10px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
     
     <div style="display: flex; gap: 10px; width: 100%;">
-        <button id="playBtn" style="flex: 1; background-color: #ff4b4b; color: white; border: none; padding: 12px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s;">
+        <button id="playBtn" style="flex: 1; background-color: #ff4b4b; color: white; border: none; padding: 12px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s; -webkit-tap-highlight-color: transparent;">
             🔊 开始播放本组英文 (精确停顿 {pause_seconds} 秒)
         </button>
-        <button id="pauseBtn" style="flex: 1; display: none; background-color: #ffc107; color: #333; border: none; padding: 12px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s;">
+        <button id="pauseBtn" style="flex: 1; display: none; background-color: #ffc107; color: #333; border: none; padding: 12px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s; -webkit-tap-highlight-color: transparent;">
             ⏸️ 暂停播放
         </button>
-        <button id="resetBtn" style="flex: 1; display: none; background-color: #666; color: white; border: none; padding: 12px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s;">
+        <button id="resetBtn" style="flex: 1; display: none; background-color: #666; color: white; border: none; padding: 12px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s; -webkit-tap-highlight-color: transparent;">
             🔄 从头重播
         </button>
     </div>
@@ -233,10 +225,9 @@ html_code = f"""
 """
 
 components.html(html_code, height=160)
-single_audio_player = st.empty()
 st.markdown("---")
 
-# ================= 7. 列表渲染 (UI 展示) =================
+# ================= 8. 列表渲染 (移动端专属纯前端按钮) =================
 col_btn, col_en, col_zh = st.columns([1, 4, 4])
 with col_btn:
     st.markdown("**发音**")
@@ -247,28 +238,47 @@ with col_zh:
 
 st.divider()
 
-for idx, row in df_unit.iterrows():
+# 使用 enumerate 来获取这是当前组的第几个单词 (loop_idx: 0-19)
+for loop_idx, (idx, row) in enumerate(df_unit.iterrows()):
     col_btn, col_en, col_zh = st.columns([1, 4, 4])
     
     with col_btn:
-        if st.button("🔊", key=f"btn_play_{current_unit_idx}_{idx}", help=f"朗读 {row['English']}"):
-            single_bytes = generate_single_audio(row['English'], is_slow_mode)
-            
-            # 核心魔法障眼法：随机生成 1 到 100 个看不见、听不着的空白尾巴字节
-            padding = b'\x00' * random.randint(1, 100)
-            
-            # 把尾巴追加在音频后面，骗过浏览器和 Streamlit，强制它每次都认为这是一个新文件并自动播放！
-            new_audio_bytes = single_bytes + padding
-            single_audio_player.audio(new_audio_bytes, format='audio/mp3', autoplay=True)
+        # 直接复用上面已经生成的音频数据
+        current_b64 = b64_audios[loop_idx]
+        
+        # 核心改造：完全抛弃 Streamlit 后台交互，嵌入原生 HTML 播放器
+        # 手机浏览器会认为这是一次合法的“用户主动点击网页元素播放”操作
+        btn_html = f'''
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <style>
+            body {{ margin: 0; padding: 0; background-color: transparent; overflow: hidden; }}
+            button {{ 
+                border: none; background: transparent; font-size: 24px; cursor: pointer; 
+                display: flex; align-items: center; justify-content: flex-start; 
+                width: 100%; height: 100%; outline: none; -webkit-tap-highlight-color: transparent; 
+            }}
+            button:active {{ transform: scale(0.85); }} /* 点击时的小缩放特效 */
+        </style>
+        </head>
+        <body>
+            <button onclick="var aud = document.getElementById('aud'); aud.currentTime=0; aud.play();">🔊</button>
+            <audio id="aud" src="data:audio/mp3;base64,{current_b64}"></audio>
+        </body>
+        </html>
+        '''
+        components.html(btn_html, height=40)
             
     with col_en:
         if show_english:
-            st.markdown(f"**{row['English']}**")
+            # 加入一点内边距让文字和图标对齐
+            st.markdown(f"<div style='padding-top: 8px;'><b>{row['English']}</b></div>", unsafe_allow_html=True)
             
     with col_zh:
         if show_chinese:
-            st.markdown(f"{row['Chinese']}")
+            st.markdown(f"<div style='padding-top: 8px;'>{row['Chinese']}</div>", unsafe_allow_html=True)
             
     st.divider()
 
-st.caption("💡 提示：列表中的小喇叭已解除封印，支持无限次狂点连读！")
+st.caption("📱 移动端专享优化：小喇叭现已替换为原生闪电按键，0 延迟、免流量发音。")
