@@ -11,12 +11,6 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="AI 听力单词本", page_icon="🎧", layout="centered")
 st.title("🎧 单元听力单词本")
 
-st.markdown("""
-    <style>
-        audio { display: none !important; }
-    </style>
-""", unsafe_allow_html=True)
-
 # ================= 2. 加载数据 =================
 @st.cache_data
 def load_data():
@@ -80,28 +74,32 @@ df_unit = df_words.iloc[start_index:end_index].copy()
 if is_shuffle:
     df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
-# ================= 6. 核心：生成所有音频数据 =================
-# 我们把这 20 个单词的音频一次性生成好，后面播放器和列表按钮都能直接复用，速度起飞！
+# ================= 6. 核心：一次性生成双格式音频 =================
+# 一次性把音频生成好，供上方播放器和下方列表同时调用
 @st.cache_data(show_spinner=False)
-def get_audio_b64_list(words_list, slow_mode):
+def get_all_audios(words_list, slow_mode):
     b64_list = []
+    bytes_list = []
     for word in words_list:
         tts = gTTS(text=word, lang='en', slow=slow_mode)
         fp = io.BytesIO()
         tts.write_to_fp(fp)
-        b64 = base64.b64encode(fp.getvalue()).decode('utf-8')
-        b64_list.append(b64)
-    return b64_list
+        audio_data = fp.getvalue()
+        
+        bytes_list.append(audio_data)  # 供原生播放器使用
+        b64_list.append(base64.b64encode(audio_data).decode('utf-8')) # 供网页 JS 使用
+        
+    return b64_list, bytes_list
 
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
 st.markdown("---")
 
 audio_words = df_unit['English'].tolist()
 
-with st.spinner("正在加载智能播放器..."):
-    b64_audios = get_audio_b64_list(audio_words, is_slow_mode)
+with st.spinner("正在加载音频数据..."):
+    b64_audios, bytes_audios = get_all_audios(audio_words, is_slow_mode)
 
-# ================= 7. 顶部连播控制台 (前端实现) =================
+# ================= 7. 顶部连播控制台 (依然保持前端智能连读) =================
 html_code = f"""
 <div style="font-family: sans-serif; padding: 15px; background-color: #f0f2f6; border-radius: 10px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
     
@@ -227,58 +225,35 @@ html_code = f"""
 components.html(html_code, height=160)
 st.markdown("---")
 
-# ================= 8. 列表渲染 (移动端专属纯前端按钮) =================
-col_btn, col_en, col_zh = st.columns([1, 4, 4])
-with col_btn:
-    st.markdown("**发音**")
+# ================= 8. 列表渲染 (手机端无敌适配版) =================
+# 调整列宽比例，给原生播放器留出更舒适的空间
+col_en, col_zh, col_aud = st.columns([3, 3, 4])
 with col_en:
     st.markdown("**英文单词**" if show_english else "")
 with col_zh:
     st.markdown("**中文释义**" if show_chinese else "")
+with col_aud:
+    st.markdown("**单点发音**")
 
 st.divider()
 
-# 使用 enumerate 来获取这是当前组的第几个单词 (loop_idx: 0-19)
 for loop_idx, (idx, row) in enumerate(df_unit.iterrows()):
-    col_btn, col_en, col_zh = st.columns([1, 4, 4])
+    col_en, col_zh, col_aud = st.columns([3, 3, 4])
     
-    with col_btn:
-        # 直接复用上面已经生成的音频数据
-        current_b64 = b64_audios[loop_idx]
-        
-        # 核心改造：完全抛弃 Streamlit 后台交互，嵌入原生 HTML 播放器
-        # 手机浏览器会认为这是一次合法的“用户主动点击网页元素播放”操作
-        btn_html = f'''
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <style>
-            body {{ margin: 0; padding: 0; background-color: transparent; overflow: hidden; }}
-            button {{ 
-                border: none; background: transparent; font-size: 24px; cursor: pointer; 
-                display: flex; align-items: center; justify-content: flex-start; 
-                width: 100%; height: 100%; outline: none; -webkit-tap-highlight-color: transparent; 
-            }}
-            button:active {{ transform: scale(0.85); }} /* 点击时的小缩放特效 */
-        </style>
-        </head>
-        <body>
-            <button onclick="var aud = document.getElementById('aud'); aud.currentTime=0; aud.play();">🔊</button>
-            <audio id="aud" src="data:audio/mp3;base64,{current_b64}"></audio>
-        </body>
-        </html>
-        '''
-        components.html(btn_html, height=40)
-            
     with col_en:
         if show_english:
-            # 加入一点内边距让文字和图标对齐
-            st.markdown(f"<div style='padding-top: 8px;'><b>{row['English']}</b></div>", unsafe_allow_html=True)
+            # 加入 padding-top 完美对齐右侧播放器的高度
+            st.markdown(f"<div style='padding-top: 15px; font-weight: bold; font-size: 16px;'>{row['English']}</div>", unsafe_allow_html=True)
             
     with col_zh:
         if show_chinese:
-            st.markdown(f"<div style='padding-top: 8px;'>{row['Chinese']}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='padding-top: 15px;'>{row['Chinese']}</div>", unsafe_allow_html=True)
+            
+    with col_aud:
+        # 终极方案：使用 Streamlit 官方原生播放控件 st.audio
+        # 手机浏览器绝不会拦截系统原生的播放器控件！
+        st.audio(bytes_audios[loop_idx], format='audio/mp3')
             
     st.divider()
 
-st.caption("📱 移动端专享优化：小喇叭现已替换为原生闪电按键，0 延迟、免流量发音。")
+st.caption("📱 移动端防吞音版：列表已全面换装手机系统级原生音频控件，点多少次响多少次，无视一切浏览器拦截限制！")
