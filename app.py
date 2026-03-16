@@ -11,8 +11,6 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="AI 听力单词本", page_icon="🎧", layout="centered")
 st.title("🎧 单元听力单词本")
 
-# 删除了之前错误隐藏原生播放器的 CSS 坑人代码！
-
 # ================= 2. 加载数据 =================
 @st.cache_data
 def load_data():
@@ -222,31 +220,34 @@ html_code = f"""
 components.html(html_code, height=160)
 st.markdown("---")
 
-# ================= 8. 列表渲染 (终极移动端纯手工排版) =================
-# 完全抛弃 Streamlit 糟糕的响应式列，改用 HTML Flexbox 强制在一行内优美展示
-
-list_html = "<div style='background-color: transparent;'>"
+# ================= 8. 列表渲染 (防崩溃移动端专属排版) =================
+# 核心修复：逐行渲染！避免生成超大文本导致报错
 
 for loop_idx, (idx, row) in enumerate(df_unit.iterrows()):
-    # 替换尖括号防止 HTML 解析错误
     en_word = str(row['English']).replace('<', '&lt;').replace('>', '&gt;')
     zh_word = str(row['Chinese']).replace('<', '&lt;').replace('>', '&gt;')
     
-    en_text = f"<b>{en_word}</b>" if show_english else "<span style='color:#ccc;'>[已遮挡]</span>"
-    zh_text = zh_word if show_chinese else "<span style='color:#ccc;'>[已遮挡]</span>"
+    # 将原本挤在一行的英文和中文，变成精美的“上下排列”
+    en_text = f"<div style='font-size: 18px; font-weight: bold; color: #2C3E50;'>{en_word}</div>" if show_english else "<div style='color:#ccc;'>[英文已遮挡]</div>"
+    zh_text = f"<div style='font-size: 14px; color: #7F8C8D; margin-top: 4px;'>{zh_word}</div>" if show_chinese else "<div style='color:#ccc; margin-top: 4px;'>[中文已遮挡]</div>"
     
-    # 召唤原生的音频组件（带有 controls 属性），限制它的大小适配手机
-    audio_tag = f"<audio controls src='data:audio/mp3;base64,{b64_audios[loop_idx]}' style='width: 130px; height: 35px; outline: none;'></audio>"
+    # 召唤不受任何手机浏览器阻碍的原生音频控件
+    audio_tag = f"<audio controls src='data:audio/mp3;base64,{b64_audios[loop_idx]}' style='width: 140px; height: 35px; outline: none;'></audio>"
     
-    # 用 Flexbox 进行三等分布局，完美贴合手机屏幕宽度
-    list_html += f"""
-    <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #f0f2f6; padding: 12px 0;">
-        <div style="flex: 1; font-size: 16px; color: #333; padding-right: 5px; word-wrap: break-word;">{en_text}</div>
-        <div style="flex: 1; font-size: 14px; color: #666; padding-right: 5px; word-wrap: break-word;">{zh_text}</div>
-        <div style="flex: 0 0 130px; text-align: right;">{audio_tag}</div>
+    # “左侧单词释义，右侧播放器” 的完美二维排版
+    row_html = f"""
+    <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #EAECEE; padding: 12px 0;">
+        <div style="flex: 1; min-width: 0; padding-right: 15px; word-wrap: break-word;">
+            {en_text}
+            {zh_text}
+        </div>
+        <div style="flex: 0 0 140px; text-align: right;">
+            {audio_tag}
+        </div>
     </div>
     """
-list_html += "</div>"
+    
+    # 一行一行地安全输出，永不崩溃
+    st.markdown(row_html, unsafe_allow_html=True)
 
-st.markdown(list_html, unsafe_allow_html=True)
-st.caption("📱 移动端终极排版版：原生播放器现已重见天日，排版紧凑不换行！")
+st.caption("📱 移动端防崩溃护眼版：左右双结构排版，完美适配各类手机屏幕，顺畅发音！")
