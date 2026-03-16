@@ -11,6 +11,8 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="AI 听力单词本", page_icon="🎧", layout="centered")
 st.title("🎧 单元听力单词本")
 
+# 删除了之前错误隐藏原生播放器的 CSS 坑人代码！
+
 # ================= 2. 加载数据 =================
 @st.cache_data
 def load_data():
@@ -74,38 +76,33 @@ df_unit = df_words.iloc[start_index:end_index].copy()
 if is_shuffle:
     df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
-# ================= 6. 核心：一次性生成双格式音频 =================
-# 一次性把音频生成好，供上方播放器和下方列表同时调用
+# ================= 6. 核心：一次性生成所有音频 =================
 @st.cache_data(show_spinner=False)
 def get_all_audios(words_list, slow_mode):
     b64_list = []
-    bytes_list = []
     for word in words_list:
         tts = gTTS(text=word, lang='en', slow=slow_mode)
         fp = io.BytesIO()
         tts.write_to_fp(fp)
         audio_data = fp.getvalue()
-        
-        bytes_list.append(audio_data)  # 供原生播放器使用
-        b64_list.append(base64.b64encode(audio_data).decode('utf-8')) # 供网页 JS 使用
-        
-    return b64_list, bytes_list
+        b64_list.append(base64.b64encode(audio_data).decode('utf-8'))
+    return b64_list
 
 st.markdown(f"### 当前：{selected_unit_str} {'(🔀 乱序模式)' if is_shuffle else ''}")
 st.markdown("---")
 
 audio_words = df_unit['English'].tolist()
 
-with st.spinner("正在加载音频数据..."):
-    b64_audios, bytes_audios = get_all_audios(audio_words, is_slow_mode)
+with st.spinner("正在加载智能音频组件..."):
+    b64_audios = get_all_audios(audio_words, is_slow_mode)
 
-# ================= 7. 顶部连播控制台 (依然保持前端智能连读) =================
+# ================= 7. 顶部连播控制台 (隐藏式的独立播放器) =================
 html_code = f"""
 <div style="font-family: sans-serif; padding: 15px; background-color: #f0f2f6; border-radius: 10px; text-align: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
     
     <div style="display: flex; gap: 10px; width: 100%;">
         <button id="playBtn" style="flex: 1; background-color: #ff4b4b; color: white; border: none; padding: 12px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s; -webkit-tap-highlight-color: transparent;">
-            🔊 开始播放本组英文 (精确停顿 {pause_seconds} 秒)
+            🔊 开始连读磨耳朵 (精确停顿 {pause_seconds} 秒)
         </button>
         <button id="pauseBtn" style="flex: 1; display: none; background-color: #ffc107; color: #333; border: none; padding: 12px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.3s; -webkit-tap-highlight-color: transparent;">
             ⏸️ 暂停播放
@@ -145,7 +142,7 @@ html_code = f"""
         player.pause();
         player.src = "";
         
-        playBtn.innerText = "🔊 开始播放本组英文 (精确停顿 {pause_seconds} 秒)";
+        playBtn.innerText = "🔊 开始连读磨耳朵 (精确停顿 {pause_seconds} 秒)";
         playBtn.style.display = "block";
         pauseBtn.style.display = "none";
         resetBtn.style.display = "none";
@@ -225,35 +222,31 @@ html_code = f"""
 components.html(html_code, height=160)
 st.markdown("---")
 
-# ================= 8. 列表渲染 (手机端无敌适配版) =================
-# 调整列宽比例，给原生播放器留出更舒适的空间
-col_en, col_zh, col_aud = st.columns([3, 3, 4])
-with col_en:
-    st.markdown("**英文单词**" if show_english else "")
-with col_zh:
-    st.markdown("**中文释义**" if show_chinese else "")
-with col_aud:
-    st.markdown("**单点发音**")
+# ================= 8. 列表渲染 (终极移动端纯手工排版) =================
+# 完全抛弃 Streamlit 糟糕的响应式列，改用 HTML Flexbox 强制在一行内优美展示
 
-st.divider()
+list_html = "<div style='background-color: transparent;'>"
 
 for loop_idx, (idx, row) in enumerate(df_unit.iterrows()):
-    col_en, col_zh, col_aud = st.columns([3, 3, 4])
+    # 替换尖括号防止 HTML 解析错误
+    en_word = str(row['English']).replace('<', '&lt;').replace('>', '&gt;')
+    zh_word = str(row['Chinese']).replace('<', '&lt;').replace('>', '&gt;')
     
-    with col_en:
-        if show_english:
-            # 加入 padding-top 完美对齐右侧播放器的高度
-            st.markdown(f"<div style='padding-top: 15px; font-weight: bold; font-size: 16px;'>{row['English']}</div>", unsafe_allow_html=True)
-            
-    with col_zh:
-        if show_chinese:
-            st.markdown(f"<div style='padding-top: 15px;'>{row['Chinese']}</div>", unsafe_allow_html=True)
-            
-    with col_aud:
-        # 终极方案：使用 Streamlit 官方原生播放控件 st.audio
-        # 手机浏览器绝不会拦截系统原生的播放器控件！
-        st.audio(bytes_audios[loop_idx], format='audio/mp3')
-            
-    st.divider()
+    en_text = f"<b>{en_word}</b>" if show_english else "<span style='color:#ccc;'>[已遮挡]</span>"
+    zh_text = zh_word if show_chinese else "<span style='color:#ccc;'>[已遮挡]</span>"
+    
+    # 召唤原生的音频组件（带有 controls 属性），限制它的大小适配手机
+    audio_tag = f"<audio controls src='data:audio/mp3;base64,{b64_audios[loop_idx]}' style='width: 130px; height: 35px; outline: none;'></audio>"
+    
+    # 用 Flexbox 进行三等分布局，完美贴合手机屏幕宽度
+    list_html += f"""
+    <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #f0f2f6; padding: 12px 0;">
+        <div style="flex: 1; font-size: 16px; color: #333; padding-right: 5px; word-wrap: break-word;">{en_text}</div>
+        <div style="flex: 1; font-size: 14px; color: #666; padding-right: 5px; word-wrap: break-word;">{zh_text}</div>
+        <div style="flex: 0 0 130px; text-align: right;">{audio_tag}</div>
+    </div>
+    """
+list_html += "</div>"
 
-st.caption("📱 移动端防吞音版：列表已全面换装手机系统级原生音频控件，点多少次响多少次，无视一切浏览器拦截限制！")
+st.markdown(list_html, unsafe_allow_html=True)
+st.caption("📱 移动端终极排版版：原生播放器现已重见天日，排版紧凑不换行！")
