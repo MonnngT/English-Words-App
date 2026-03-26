@@ -12,13 +12,11 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="AI 听力单词本-持久化版", page_icon="🎧", layout="centered")
 
 # 连接到 Google Sheets
-# 注意：你需要在 Streamlit Secrets 中配置好 connection 信息
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-    # 读取历史数据
-    df_history = conn.read(ttl=0) # ttl=0 保证每次都是读取最新数据
+    df_history = conn.read(ttl=0) 
 except Exception as e:
-    st.error("云端数据库连接失败，请检查 Secrets 配置。")
+    st.error("云端数据库连接尚未生效，请检查 Secrets。目前使用临时数据。")
     df_history = pd.DataFrame(columns=['English', 'Chinese'])
 
 # ================= 2. 加载本地单词表 =================
@@ -34,7 +32,13 @@ try:
     df_source = load_data()
     total_words = len(df_source)
 except:
+    st.error("找不到单词本文件！请确保仓库里有 words.csv。")
     st.stop()
+
+# 👇这里就是上一次被我误删的核心代码，现在补回来了！👇
+WORDS_PER_UNIT = 20
+total_units = (total_words + WORDS_PER_UNIT - 1) // WORDS_PER_UNIT
+unit_options = [f"第 {i+1} 单元 ({i*WORDS_PER_UNIT + 1}-{min((i+1)*WORDS_PER_UNIT, total_words)})" for i in range(total_units)]
 
 # ================= 3. 核心功能：渲染模块 =================
 @st.cache_data(show_spinner=False)
@@ -50,9 +54,9 @@ def render_list(df_to_show, pause_sec, is_slow, show_en, show_zh):
         return
     
     audio_words = df_to_show['English'].tolist()
-    b64_audios = [get_audio_b64(w, is_slow) for w in audio_words]
+    with st.spinner("正在加载音频..."):
+        b64_audios = [get_audio_b64(w, is_slow) for w in audio_words]
 
-    # JS 连读播放器
     html_code = f"""
     <div style="font-family: sans-serif; padding: 15px; background-color: #f0f2f6; border-radius: 10px; text-align: center;">
         <button id="pBtn" style="width:100%; background:#ff4b4b; color:white; border:none; padding:12px; border-radius:6px; cursor:pointer; font-weight:bold;">
@@ -88,8 +92,10 @@ def render_list(df_to_show, pause_sec, is_slow, show_en, show_zh):
     components.html(html_code, height=130)
 
     for i, row in df_to_show.iterrows():
-        en = f"<b>{row['English']}</b>" if show_en else "***"
-        zh = row['Chinese'] if show_zh else "***"
+        en_word = str(row['English']).replace('<', '&lt;').replace('>', '&gt;')
+        zh_word = str(row['Chinese']).replace('<', '&lt;').replace('>', '&gt;')
+        en = f"<b>{en_word}</b>" if show_en else "<span style='color:#ccc;'>***</span>"
+        zh = zh_word if show_zh else "<span style='color:#ccc;'>***</span>"
         tag = f"<audio controls src='data:audio/mp3;base64,{b64_audios[audio_words.index(row['English'])]}' style='width:140px;height:35px;'></audio>"
         st.markdown(f'<div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #eee;padding:10px 0;"><div style="flex:1;">{en}<br>{zh}</div><div style="flex:0 0 140px;">{tag}</div></div>', unsafe_allow_html=True)
 
@@ -105,15 +111,14 @@ with st.sidebar:
 
 if mode == "📖 单元学习":
     st.title("📖 单元学习")
-    unit_list = [f"第 {i+1} 单元" for i in range(total_units)]
-    unit = st.selectbox("选择单元", unit_options := unit_list)
-    idx = unit_list.index(unit)
-    df_unit = df_source.iloc[idx*20 : (idx+1)*20].copy()
+    unit = st.selectbox("选择单元", unit_options)
+    idx = unit_options.index(unit)
+    df_unit = df_source.iloc[idx*WORDS_PER_UNIT : (idx+1)*WORDS_PER_UNIT].copy()
 
     if st.button("⭐ 永久存入云端复习库", type="primary", use_container_width=True):
-        # 合并新旧数据并去重
+        if 'English' not in df_history.columns:
+            df_history = pd.DataFrame(columns=['English', 'Chinese'])
         updated_df = pd.concat([df_history, df_unit]).drop_duplicates(subset=['English'])
-        # 写入 Google Sheets
         conn.update(data=updated_df)
         st.success("已成功存入云端表格！永不丢失。")
         st.rerun()
