@@ -5,7 +5,7 @@ import io
 import os
 import base64
 import json
-import wave  # 核心新增：用于生成防锁屏的空白音频
+import wave 
 from streamlit_gsheets import GSheetsConnection
 import streamlit.components.v1 as components
 
@@ -16,7 +16,7 @@ try:
     conn = st.connection("gsheets", type=GSheetsConnection)
     df_history = conn.read(ttl=0)
     
-    # 【防崩溃墙 1】：彻底清理 Google 表格中的空行、NaN 和无意义数据
+    # 彻底清理 Google 表格中的空行、NaN 和无意义数据
     df_history = df_history.dropna(subset=['English'])
     df_history['English'] = df_history['English'].astype(str).str.strip()
     df_history = df_history[df_history['English'] != '']
@@ -52,7 +52,6 @@ unit_options = [f"第 {i+1} 单元 ({i*WORDS_PER_UNIT + 1}-{min((i+1)*WORDS_PER_
 # ================= 3. 核心音频模块 =================
 @st.cache_data(show_spinner=False)
 def get_audio_b64(word, slow_mode):
-    # 【防崩溃墙 2】：确保传入 gTTS 的绝对是健康字符串
     safe_word = str(word).strip()
     if not safe_word:
         safe_word = "error"
@@ -63,15 +62,14 @@ def get_audio_b64(word, slow_mode):
 
 @st.cache_data(show_spinner=False)
 def generate_silence_wav_b64(seconds):
-    """黑科技：生成 N 秒的纯空白音频流，用来骗过手机系统的锁屏检测"""
     sample_rate = 44100
     num_samples = int(sample_rate * seconds)
     fp = io.BytesIO()
     with wave.open(fp, 'wb') as wav:
         wav.setnchannels(1)
-        wav.setsampwidth(2) # 16-bit
+        wav.setsampwidth(2) 
         wav.setframerate(sample_rate)
-        wav.writeframes(b'\x00' * (num_samples * 2)) # 写入纯静音数据
+        wav.writeframes(b'\x00' * (num_samples * 2)) 
     return "data:audio/wav;base64," + base64.b64encode(fp.getvalue()).decode('utf-8')
 
 def render_list(df_to_show, pause_sec, is_slow, show_en, show_zh):
@@ -79,7 +77,6 @@ def render_list(df_to_show, pause_sec, is_slow, show_en, show_zh):
         st.info("库里还没有单词。")
         return
     
-    # 再次清理确保万无一失
     df_to_show = df_to_show[df_to_show['English'].astype(str).str.strip() != '']
     audio_words = df_to_show['English'].astype(str).tolist()
     
@@ -113,7 +110,6 @@ def render_list(df_to_show, pause_sec, is_slow, show_en, show_zh):
             }}
         }};
 
-        // 【重构的无缝播放引擎】：用真实音频文件代替延时器，完美破解锁屏限制
         function playNext() {{
             if(!playing) return;
             
@@ -136,7 +132,7 @@ def render_list(df_to_show, pause_sec, is_slow, show_en, show_zh):
                         cur++;
                         if(cur < ws.length) {{
                             isGap = true;
-                            playNext(); // 单词播完瞬间无缝接入空白音频
+                            playNext(); 
                         }} else {{ 
                             s.innerText="🎉 播放完毕"; playing=false; b.innerText="🔊 重新开始"; cur=0; 
                         }}
@@ -162,7 +158,15 @@ with st.sidebar:
     st.divider()
     show_en = st.checkbox("显示英文", value=True)
     show_zh = st.checkbox("显示中文", value=True)
+    
+    # 核心修复：多次打乱按钮逻辑回归
     is_shuffle = st.toggle("乱序模式")
+    if is_shuffle:
+        if 'shuffle_seed' not in st.session_state:
+            st.session_state.shuffle_seed = 42
+        if st.button("🔄 换一种打乱方式", use_container_width=True):
+            st.session_state.shuffle_seed += 1
+            
     pause_sec = st.slider("停顿时间", 1, 30, 2)
     is_slow = st.radio("语速", ["正常", "放慢"]) == "放慢"
 
@@ -188,7 +192,10 @@ if mode == "📖 单元学习与添加":
             st.success(f"已成功将 {unit} 存入云端！永不丢失。")
             st.rerun()
 
-        if is_shuffle: df_unit = df_unit.sample(frac=1).reset_index(drop=True)
+        if is_shuffle: 
+            # 引入随机种子确保点击按钮时发生变换
+            df_unit = df_unit.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
+            
         render_list(df_unit, pause_sec, is_slow, show_en, show_zh)
 
     with tab2:
@@ -208,7 +215,6 @@ if mode == "📖 单元学习与添加":
                     dfs_to_add.append(b_df)
                 
                 new_data = pd.concat([df_history] + dfs_to_add).drop_duplicates(subset=['English'])
-                # 清洗待存入的数据
                 new_data = new_data.dropna(subset=['English'])
                 new_data = new_data[new_data['English'].astype(str).str.strip() != '']
                 
@@ -226,5 +232,8 @@ else:
         st.rerun()
 
     df_rev = df_history.copy()
-    if is_shuffle and not df_rev.empty: df_rev = df_rev.sample(frac=1).reset_index(drop=True)
+    if is_shuffle and not df_rev.empty: 
+        # 复习库同理，引入随机种子
+        df_rev = df_rev.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
+        
     render_list(df_rev, pause_sec, is_slow, show_en, show_zh)
