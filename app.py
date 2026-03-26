@@ -5,25 +5,28 @@ import io
 import os
 import base64
 import json
+import wave  # 核心新增：用于生成防锁屏的空白音频
 from streamlit_gsheets import GSheetsConnection
 import streamlit.components.v1 as components
 
 # ================= 1. 页面配置与数据库连接 =================
 st.set_page_config(page_title="AI 听力单词本-持久化版", page_icon="🎧", layout="centered")
 
-# 连接到 Google Sheets
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
     df_history = conn.read(ttl=0)
-    # 清理空行
-    df_history = df_history.dropna(subset=['English'])
     
-    # 【无感数据库升级】：如果旧表里没有“单元名”这一列，自动给它加上
+    # 【防崩溃墙 1】：彻底清理 Google 表格中的空行、NaN 和无意义数据
+    df_history = df_history.dropna(subset=['English'])
+    df_history['English'] = df_history['English'].astype(str).str.strip()
+    df_history = df_history[df_history['English'] != '']
+    df_history = df_history[df_history['English'].str.lower() != 'nan']
+    
     if 'Unit_Name' not in df_history.columns:
         df_history['Unit_Name'] = '未知单元'
         
 except Exception as e:
-    st.error("云端数据库连接尚未生效，请检查 Secrets。目前使用临时数据。")
+    st.error("云端数据库连接尚未生效，目前使用临时数据。")
     df_history = pd.DataFrame(columns=['English', 'Chinese', 'Unit_Name'])
 
 # ================= 2. 加载本地单词表 =================
@@ -42,57 +45,104 @@ except:
     st.error("找不到单词本文件！请确保仓库里有 words.csv。")
     st.stop()
 
-# 计算总单元数并生成列表
 WORDS_PER_UNIT = 20
 total_units = (total_words + WORDS_PER_UNIT - 1) // WORDS_PER_UNIT
 unit_options = [f"第 {i+1} 单元 ({i*WORDS_PER_UNIT + 1}-{min((i+1)*WORDS_PER_UNIT, total_words)})" for i in range(total_units)]
 
-# ================= 3. 核心功能：渲染模块 =================
+# ================= 3. 核心音频模块 =================
 @st.cache_data(show_spinner=False)
 def get_audio_b64(word, slow_mode):
-    tts = gTTS(text=word, lang='en', slow=slow_mode)
+    # 【防崩溃墙 2】：确保传入 gTTS 的绝对是健康字符串
+    safe_word = str(word).strip()
+    if not safe_word:
+        safe_word = "error"
+    tts = gTTS(text=safe_word, lang='en', slow=slow_mode)
     fp = io.BytesIO()
     tts.write_to_fp(fp)
     return base64.b64encode(fp.getvalue()).decode('utf-8')
+
+@st.cache_data(show_spinner=False)
+def generate_silence_wav_b64(seconds):
+    """黑科技：生成 N 秒的纯空白音频流，用来骗过手机系统的锁屏检测"""
+    sample_rate = 44100
+    num_samples = int(sample_rate * seconds)
+    fp = io.BytesIO()
+    with wave.open(fp, 'wb') as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2) # 16-bit
+        wav.setframerate(sample_rate)
+        wav.writeframes(b'\x00' * (num_samples * 2)) # 写入纯静音数据
+    return "data:audio/wav;base64," + base64.b64encode(fp.getvalue()).decode('utf-8')
 
 def render_list(df_to_show, pause_sec, is_slow, show_en, show_zh):
     if df_to_show.empty:
         st.info("库里还没有单词。")
         return
     
-    audio_words = df_to_show['English'].tolist()
-    with st.spinner("正在加载音频..."):
+    # 再次清理确保万无一失
+    df_to_show = df_to_show[df_to_show['English'].astype(str).str.strip() != '']
+    audio_words = df_to_show['English'].astype(str).tolist()
+    
+    with st.spinner("正在加载音频引擎 (支持手机息屏后台连播)..."):
         b64_audios = [get_audio_b64(w, is_slow) for w in audio_words]
+        silence_audio_uri = generate_silence_wav_b64(pause_sec)
 
     html_code = f"""
     <div style="font-family: sans-serif; padding: 15px; background-color: #f0f2f6; border-radius: 10px; text-align: center;">
         <button id="pBtn" style="width:100%; background:#ff4b4b; color:white; border:none; padding:12px; border-radius:6px; cursor:pointer; font-weight:bold;">
-            🔊 开始连续播放 (停顿 {pause_sec}s)
+            🔊 开始息屏后台连读 (停顿 {pause_sec}s)
         </button>
         <div id="st" style="margin-top:10px; font-weight:bold; color:#31333F;">准备就绪</div>
         <audio id="player"></audio>
     </div>
     <script>
-        const ws = {json.dumps(audio_words)}; const as = {json.dumps(b64_audios)};
-        let cur = 0; let playing = false; const p = document.getElementById('player');
+        const ws = {json.dumps(audio_words)}; 
+        const as = {json.dumps(b64_audios)};
+        const silenceUri = "{silence_audio_uri}";
+        
+        let cur = 0; let playing = false; let isGap = false;
+        const p = document.getElementById('player');
         const b = document.getElementById('pBtn'); const s = document.getElementById('st');
 
         b.onclick = () => {{
-            if(playing) {{ playing=false; b.innerText="▶️ 继续播放"; s.innerText="已暂停"; p.pause(); }}
-            else {{ playing=true; b.innerText="⏸️ 暂停"; play(); }}
+            if(playing) {{ 
+                playing=false; b.innerText="▶️ 继续播放"; s.innerText="已暂停"; p.pause(); 
+            }} else {{ 
+                playing=true; b.innerText="⏸️ 暂停"; 
+                if (p.src && p.currentTime > 0 && !p.ended) p.play(); else playNext(); 
+            }}
         }};
 
-        function play() {{
-            if(!playing || cur >= ws.length) return;
-            s.innerText = "正在读: " + ws[cur];
-            p.src = "data:audio/mp3;base64," + as[cur]; p.play();
-            p.onended = () => {{
-                cur++;
+        // 【重构的无缝播放引擎】：用真实音频文件代替延时器，完美破解锁屏限制
+        function playNext() {{
+            if(!playing) return;
+            
+            if (isGap) {{
+                s.innerText = "思考中({pause_sec}s)...";
+                p.src = silenceUri; 
+                p.play();
+                p.onended = () => {{
+                    if(!playing) return;
+                    isGap = false;
+                    playNext();
+                }};
+            }} else {{
                 if(cur < ws.length) {{
-                    s.innerText = "思考中({pause_sec}s)...";
-                    setTimeout(play, {pause_sec} * 1000);
-                }} else {{ s.innerText="🎉 播放完毕"; playing=false; b.innerText="🔊 重新开始"; cur=0; }}
-            }};
+                    s.innerText = "正在读: " + ws[cur];
+                    p.src = "data:audio/mp3;base64," + as[cur]; 
+                    p.play();
+                    p.onended = () => {{
+                        if(!playing) return;
+                        cur++;
+                        if(cur < ws.length) {{
+                            isGap = true;
+                            playNext(); // 单词播完瞬间无缝接入空白音频
+                        }} else {{ 
+                            s.innerText="🎉 播放完毕"; playing=false; b.innerText="🔊 重新开始"; cur=0; 
+                        }}
+                    }};
+                }}
+            }}
         }}
     </script>
     """
@@ -120,13 +170,9 @@ with st.sidebar:
 if mode == "📖 单元学习与添加":
     st.title("📖 单元学习与添加")
     
-    # 提取已经添加过的单元记录
     added_units = [u for u in df_history['Unit_Name'].unique() if pd.notna(u) and str(u).startswith("第")]
-    
-    # 在顶部醒目位置显示防重复记录
     st.info(f"📌 **已加入复习库的单元**：{', '.join(added_units) if added_units else '暂无记录'}")
     
-    # 使用 Tabs 标签页分离“单单元”和“批量”功能
     tab1, tab2 = st.tabs(["🎯 单单元学习", "📦 批量存入复习库"])
     
     with tab1:
@@ -134,9 +180,6 @@ if mode == "📖 单元学习与添加":
         idx = unit_options.index(unit)
         df_unit = df_source.iloc[idx*WORDS_PER_UNIT : (idx+1)*WORDS_PER_UNIT].copy()
         
-        # 核心：给要保存的数据打上“单元名”的标签
-        df_unit['Unit_Name'] = unit.split(' ')[1] + "单元" # 简化名字比如"1单元"
-        # 完整名字记录
         df_unit['Unit_Name'] = unit 
 
         if st.button("⭐ 永久存入云端复习库", type="primary", use_container_width=True):
@@ -150,17 +193,8 @@ if mode == "📖 单元学习与添加":
 
     with tab2:
         st.markdown("#### 批量导入向导")
-        st.write("一次性选择多个单元，将它们全部打包存入云端的历史复习库中。")
-        
-        # 智能过滤：默认选中的选项里排除已经添加过的单元
         available_units = [u for u in unit_options if u not in added_units]
-        
-        batch_units = st.multiselect(
-            "请选择要批量添加的单元：", 
-            options=unit_options,
-            default=available_units[:3] if available_units else None, # 默认选中前3个还没加的单元
-            help="你可以同时选中多个单元"
-        )
+        batch_units = st.multiselect("请选择要批量添加的单元：", options=unit_options, default=available_units[:3] if available_units else None)
         
         if st.button("🚀 确认批量存入", type="primary", use_container_width=True):
             if not batch_units:
@@ -173,8 +207,11 @@ if mode == "📖 单元学习与添加":
                     b_df['Unit_Name'] = bu
                     dfs_to_add.append(b_df)
                 
-                # 合并所有的批量单元到历史记录，并执行去重
                 new_data = pd.concat([df_history] + dfs_to_add).drop_duplicates(subset=['English'])
+                # 清洗待存入的数据
+                new_data = new_data.dropna(subset=['English'])
+                new_data = new_data[new_data['English'].astype(str).str.strip() != '']
+                
                 conn.update(data=new_data)
                 st.success(f"🎉 成功！已将 {len(batch_units)} 个单元的内容存入复习库。")
                 st.rerun()
