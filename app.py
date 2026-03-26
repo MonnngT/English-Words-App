@@ -14,10 +14,17 @@ st.set_page_config(page_title="AI 听力单词本-持久化版", page_icon="🎧
 # 连接到 Google Sheets
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
-    df_history = conn.read(ttl=0) 
+    df_history = conn.read(ttl=0)
+    # 清理空行
+    df_history = df_history.dropna(subset=['English'])
+    
+    # 【无感数据库升级】：如果旧表里没有“单元名”这一列，自动给它加上
+    if 'Unit_Name' not in df_history.columns:
+        df_history['Unit_Name'] = '未知单元'
+        
 except Exception as e:
     st.error("云端数据库连接尚未生效，请检查 Secrets。目前使用临时数据。")
-    df_history = pd.DataFrame(columns=['English', 'Chinese'])
+    df_history = pd.DataFrame(columns=['English', 'Chinese', 'Unit_Name'])
 
 # ================= 2. 加载本地单词表 =================
 @st.cache_data
@@ -35,7 +42,7 @@ except:
     st.error("找不到单词本文件！请确保仓库里有 words.csv。")
     st.stop()
 
-# 👇这里就是上一次被我误删的核心代码，现在补回来了！👇
+# 计算总单元数并生成列表
 WORDS_PER_UNIT = 20
 total_units = (total_words + WORDS_PER_UNIT - 1) // WORDS_PER_UNIT
 unit_options = [f"第 {i+1} 单元 ({i*WORDS_PER_UNIT + 1}-{min((i+1)*WORDS_PER_UNIT, total_words)})" for i in range(total_units)]
@@ -99,9 +106,9 @@ def render_list(df_to_show, pause_sec, is_slow, show_en, show_zh):
         tag = f"<audio controls src='data:audio/mp3;base64,{b64_audios[audio_words.index(row['English'])]}' style='width:140px;height:35px;'></audio>"
         st.markdown(f'<div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #eee;padding:10px 0;"><div style="flex:1;">{en}<br>{zh}</div><div style="flex:0 0 140px;">{tag}</div></div>', unsafe_allow_html=True)
 
-# ================= 4. 侧边栏与页面逻辑 =================
+# ================= 4. 侧边栏 =================
 with st.sidebar:
-    mode = st.radio("模式：", ["📖 单元学习", "📚 历史复习库(永久保存)"])
+    mode = st.radio("模式：", ["📖 单元学习与添加", "📚 历史复习库(永久保存)"])
     st.divider()
     show_en = st.checkbox("显示英文", value=True)
     show_zh = st.checkbox("显示中文", value=True)
@@ -109,29 +116,75 @@ with st.sidebar:
     pause_sec = st.slider("停顿时间", 1, 30, 2)
     is_slow = st.radio("语速", ["正常", "放慢"]) == "放慢"
 
-if mode == "📖 单元学习":
-    st.title("📖 单元学习")
-    unit = st.selectbox("选择单元", unit_options)
-    idx = unit_options.index(unit)
-    df_unit = df_source.iloc[idx*WORDS_PER_UNIT : (idx+1)*WORDS_PER_UNIT].copy()
+# ================= 5. 页面逻辑 =================
+if mode == "📖 单元学习与添加":
+    st.title("📖 单元学习与添加")
+    
+    # 提取已经添加过的单元记录
+    added_units = [u for u in df_history['Unit_Name'].unique() if pd.notna(u) and str(u).startswith("第")]
+    
+    # 在顶部醒目位置显示防重复记录
+    st.info(f"📌 **已加入复习库的单元**：{', '.join(added_units) if added_units else '暂无记录'}")
+    
+    # 使用 Tabs 标签页分离“单单元”和“批量”功能
+    tab1, tab2 = st.tabs(["🎯 单单元学习", "📦 批量存入复习库"])
+    
+    with tab1:
+        unit = st.selectbox("选择要学习的单元", unit_options)
+        idx = unit_options.index(unit)
+        df_unit = df_source.iloc[idx*WORDS_PER_UNIT : (idx+1)*WORDS_PER_UNIT].copy()
+        
+        # 核心：给要保存的数据打上“单元名”的标签
+        df_unit['Unit_Name'] = unit.split(' ')[1] + "单元" # 简化名字比如"1单元"
+        # 完整名字记录
+        df_unit['Unit_Name'] = unit 
 
-    if st.button("⭐ 永久存入云端复习库", type="primary", use_container_width=True):
-        if 'English' not in df_history.columns:
-            df_history = pd.DataFrame(columns=['English', 'Chinese'])
-        updated_df = pd.concat([df_history, df_unit]).drop_duplicates(subset=['English'])
-        conn.update(data=updated_df)
-        st.success("已成功存入云端表格！永不丢失。")
-        st.rerun()
+        if st.button("⭐ 永久存入云端复习库", type="primary", use_container_width=True):
+            updated_df = pd.concat([df_history, df_unit]).drop_duplicates(subset=['English'])
+            conn.update(data=updated_df)
+            st.success(f"已成功将 {unit} 存入云端！永不丢失。")
+            st.rerun()
 
-    if is_shuffle: df_unit = df_unit.sample(frac=1).reset_index(drop=True)
-    render_list(df_unit, pause_sec, is_slow, show_en, show_zh)
+        if is_shuffle: df_unit = df_unit.sample(frac=1).reset_index(drop=True)
+        render_list(df_unit, pause_sec, is_slow, show_en, show_zh)
+
+    with tab2:
+        st.markdown("#### 批量导入向导")
+        st.write("一次性选择多个单元，将它们全部打包存入云端的历史复习库中。")
+        
+        # 智能过滤：默认选中的选项里排除已经添加过的单元
+        available_units = [u for u in unit_options if u not in added_units]
+        
+        batch_units = st.multiselect(
+            "请选择要批量添加的单元：", 
+            options=unit_options,
+            default=available_units[:3] if available_units else None, # 默认选中前3个还没加的单元
+            help="你可以同时选中多个单元"
+        )
+        
+        if st.button("🚀 确认批量存入", type="primary", use_container_width=True):
+            if not batch_units:
+                st.warning("请至少选择一个单元！")
+            else:
+                dfs_to_add = []
+                for bu in batch_units:
+                    b_idx = unit_options.index(bu)
+                    b_df = df_source.iloc[b_idx*WORDS_PER_UNIT : (b_idx+1)*WORDS_PER_UNIT].copy()
+                    b_df['Unit_Name'] = bu
+                    dfs_to_add.append(b_df)
+                
+                # 合并所有的批量单元到历史记录，并执行去重
+                new_data = pd.concat([df_history] + dfs_to_add).drop_duplicates(subset=['English'])
+                conn.update(data=new_data)
+                st.success(f"🎉 成功！已将 {len(batch_units)} 个单元的内容存入复习库。")
+                st.rerun()
 
 else:
     st.title("📚 历史复习库")
     st.caption(f"当前云端库中共存储了 {len(df_history)} 个单词")
     
     if st.button("🗑️ 彻底清空云端数据"):
-        empty_df = pd.DataFrame(columns=['English', 'Chinese'])
+        empty_df = pd.DataFrame(columns=['English', 'Chinese', 'Unit_Name'])
         conn.update(data=empty_df)
         st.rerun()
 
