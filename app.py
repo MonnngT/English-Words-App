@@ -6,6 +6,8 @@ import os
 import base64
 import json
 import wave
+import tempfile
+import subprocess
 from streamlit_gsheets import GSheetsConnection
 import streamlit.components.v1 as components
 
@@ -76,6 +78,78 @@ def get_audio_b64(word, slow_mode):
         return ""
 
 @st.cache_data(show_spinner=False)
+def build_continuous_audio_b64(words, audio_b64_list, pause_sec):
+    """Build one MP3 track so mobile background playback does not depend on JS timers."""
+    playable_items = [(str(word), b64) for word, b64 in zip(words, audio_b64_list) if b64]
+    if not playable_items:
+        return "", []
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            silence_path = os.path.join(tmpdir, "silence.mp3")
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "anullsrc=r=24000:cl=mono",
+                    "-t",
+                    str(max(0.1, float(pause_sec))),
+                    "-acodec",
+                    "libmp3lame",
+                    "-ar",
+                    "24000",
+                    "-ac",
+                    "1",
+                    silence_path,
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            concat_path = os.path.join(tmpdir, "concat.txt")
+            with open(concat_path, "w", encoding="utf-8") as concat_file:
+                for idx, (_, audio_b64) in enumerate(playable_items):
+                    word_path = os.path.join(tmpdir, f"word_{idx:03d}.mp3")
+                    with open(word_path, "wb") as word_file:
+                        word_file.write(base64.b64decode(audio_b64))
+                    concat_file.write(f"file '{word_path.replace(os.sep, '/')}'\n")
+                    if idx < len(playable_items) - 1:
+                        concat_file.write(f"file '{silence_path.replace(os.sep, '/')}'\n")
+
+            output_path = os.path.join(tmpdir, "continuous.mp3")
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    concat_path,
+                    "-acodec",
+                    "libmp3lame",
+                    "-ar",
+                    "24000",
+                    "-ac",
+                    "1",
+                    output_path,
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            with open(output_path, "rb") as output_file:
+                return base64.b64encode(output_file.read()).decode("utf-8"), [w for w, _ in playable_items]
+    except Exception:
+        return "", [w for w, _ in playable_items]
+
+@st.cache_data(show_spinner=False)
 def generate_silence_b64(seconds):
     """生成无声 WAV，防止手机系统休眠或掐断后台进程"""
     fps = 44100
@@ -100,10 +174,12 @@ def render_list(df_to_show, pause_sec, is_slow, show_en, show_zh):
     with st.spinner("准备音频焦点恢复引擎..."):
         b64_audios = [get_audio_b64(w, is_slow) for w in audio_words]
         silence_uri = generate_silence_b64(pause_sec)
-
+        continuous_b64, continuous_words = build_continuous_audio_b64(audio_words, b64_audios, pause_sec)
     # 连读播放器只收录成功生成音频的词，避免空 src 卡住自动续播
-    play_words = [w for w, b in zip(audio_words, b64_audios) if b]
+    play_words = continuous_words or [w for w, b in zip(audio_words, b64_audios) if b]
     play_b64 = [b for b in b64_audios if b]
+    if play_words and not continuous_b64:
+        st.warning("后台连续播放增强未启用：当前环境未找到 ffmpeg，将使用普通逐词续播。")
 
     # 【核心：带有心跳监测和焦点夺回功能的 JS 播放器】
     html_code = f"""
@@ -112,18 +188,25 @@ def render_list(df_to_show, pause_sec, is_slow, show_en, show_zh):
             🔊 开始息屏后台连读 (停顿 {pause_sec}s)
         </button>
         <div id="st" style="margin-top:12px; font-weight:bold; color:#31333F;">准备就绪</div>
-        <audio id="player" style="display:none;"></audio>
+        <audio id="player" preload="auto" playsinline style="width:100%; margin-top:10px;"></audio>
     </div>
 
     <script>
         const words = {json.dumps(play_words)};
         const audios = {json.dumps(play_b64)};
         const silenceUri = "{silence_uri}";
+        const continuousAudio = "{continuous_b64}";
 
         let cur = 0, playing = false, isGap = false;
         const p = document.getElementById('player');
         const b = document.getElementById('pBtn');
         const s = document.getElementById('st');
+        const hasContinuousAudio = Boolean(continuousAudio);
+
+        if (hasContinuousAudio) {{
+            p.src = "data:audio/mp3;base64," + continuousAudio;
+            s.innerText = "已准备整段音频，可切后台播放 " + words.length + " 个单词";
+        }}
 
         function updateMetadata() {{
             if ('mediaSession' in navigator) {{
@@ -164,12 +247,25 @@ def render_list(df_to_show, pause_sec, is_slow, show_en, show_zh):
                 playing = false; p.pause(); b.innerText="▶️ 继续播放"; s.innerText="已暂停";
             }} else {{
                 playing = true; b.innerText="⏸️ 暂停播放";
-                if (p.src && !p.ended) tryToPlay(); else playNext();
+                if (hasContinuousAudio) {{
+                    if (p.ended) p.currentTime = 0;
+                    s.innerText = "整段音频播放中，可切到后台";
+                    tryToPlay();
+                }} else if (p.src && !p.ended) tryToPlay(); else playNext();
+            }}
+        }};
+
+        p.onended = () => {{
+            if (hasContinuousAudio) {{
+                playing = false;
+                b.innerText = "🔊 重新开始";
+                s.innerText = "🎉 播放完毕";
             }}
         }};
 
         function playNext() {{
             if(!playing) return;
+            if(hasContinuousAudio) return;
             updateMetadata();
 
             if(isGap) {{
