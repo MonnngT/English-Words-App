@@ -64,6 +64,20 @@ unit_options = [f"第 {i+1} 单元 ({i*WORDS_PER_UNIT + 1}-{min((i+1)*WORDS_PER_
 # 复习库分页大小（避免一次性给上千个词逐个请求 TTS）
 REVIEW_PAGE_SIZE = 20
 
+def filter_words(df, query):
+    """按英文或中文释义做普通文本搜索。"""
+    keyword = str(query).strip()
+    if df.empty or not keyword:
+        return df
+
+    english = df.get('English', pd.Series('', index=df.index)).fillna('').astype(str)
+    chinese = df.get('Chinese', pd.Series('', index=df.index)).fillna('').astype(str)
+    mask = (
+        english.str.contains(keyword, case=False, regex=False, na=False)
+        | chinese.str.contains(keyword, case=False, regex=False, na=False)
+    )
+    return df[mask].copy()
+
 # ================= 3. 核心音频与后台播放引擎 =================
 @st.cache_data(show_spinner=False)
 def get_audio_b64(word, slow_mode):
@@ -319,6 +333,7 @@ with st.sidebar:
     st.divider()
     show_en = st.checkbox("显示英文", value=True)
     show_zh = st.checkbox("显示中文", value=True)
+    search_query = st.text_input("搜索单词或中文", placeholder="例如：abandon / 放弃")
 
     st.divider()
     is_shuffle = st.toggle("开启乱序模式")
@@ -337,7 +352,7 @@ if nav == "📖 学习与添加":
     added = [u for u in df_history['Unit_Name'].unique() if pd.notna(u) and "第" in str(u)]
     st.info(f"📍 **已入库单元**：{', '.join(added) if added else '库中暂无记录'}")
 
-    t1, t2 = st.tabs(["🎯 当前单元", "📦 批量导入"])
+    t1, t2, t3 = st.tabs(["🎯 当前单元", "📦 批量导入", "🔎 搜索结果"])
 
     with t1:
         unit = st.selectbox("选择要学习的单元", unit_options)
@@ -382,6 +397,14 @@ if nav == "📖 学习与添加":
                 st.success(f"已批量导入 {len(to_add)} 个单元！")
                 st.rerun()
 
+    with t3:
+        if search_query.strip():
+            df_search = filter_words(df_source, search_query).reset_index(drop=True)
+            st.caption(f"搜索到 {len(df_search)} 个匹配结果")
+            render_list(df_search, pause_sec, is_slow, show_en, show_zh)
+        else:
+            st.info("在左侧输入英文单词或中文释义后，这里会显示搜索结果。")
+
 else:
     st.title("📚 云端复习库")
     st.write(f"目前云端永久存储了 **{len(df_history)}** 个单词")
@@ -395,6 +418,10 @@ else:
             st.rerun()
 
     df_rev = df_history.copy()
+    if search_query.strip():
+        df_rev = filter_words(df_rev, search_query).reset_index(drop=True)
+        st.caption(f"当前搜索到 {len(df_rev)} 个云端复习词")
+
     if is_shuffle and not df_rev.empty:
         df_rev = df_rev.sample(frac=1, random_state=st.session_state.shuffle_seed).reset_index(drop=True)
 
